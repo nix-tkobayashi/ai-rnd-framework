@@ -49,8 +49,14 @@ _SUBST_RE = re.compile(r"\$\((?P<paren>[^()]*(?:\([^()]*\)[^()]*)*)\)|`(?P<tick>
 
 
 def _substitutions(text: str) -> str:
-    """Command substitutions inside `text`, joined - they execute even inside double quotes."""
-    return " ; ".join(m.group("paren") or m.group("tick") or "" for m in _SUBST_RE.finditer(text))
+    """Command substitutions inside `text`, joined - they execute even inside double quotes.
+    Backslash-escaped forms (\\$(...) in a heredoc body) are inert and are skipped."""
+    out = []
+    for m in _SUBST_RE.finditer(text):
+        if m.start() > 0 and text[m.start() - 1] == "\\":
+            continue
+        out.append(m.group("paren") or m.group("tick") or "")
+    return " ; ".join(out)
 
 
 def strip_heredocs(cmd: str) -> str:
@@ -72,8 +78,15 @@ _SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|;|\n|\||&")
 _CD_RE = re.compile(r"^(?:cd|pushd)\s+(?P<dir>[^\s;&|]+)\s*$")
 # interpreter one-liners that write: python -c "...open(p,'w')...", node -e, perl -e
 _INTERP_WRITE_RE = re.compile(
-    r"(?:open|write_text|write_bytes|writeFileSync|appendFileSync|mkdir|makedirs|remove|unlink|rename|replace|copy|copyfile|copytree|rmtree|chmod|touch)"
-    r"\s*\(\s*[\"'](?P<path>[^\"']+)[\"']")
+    # open(path, "w") / io.open(path, mode="a") - a bare open() is a read and is fine
+    r"""(?:\bio\.)?\bopen\s*\(\s*["'](?P<open>[^"']+)["']\s*,\s*(?:mode\s*=\s*)?["'][wax+]"""
+    # Path("p").write_text(...) / .unlink() / .mkdir() ...
+    r"""|\b(?:Path|PurePath)\s*\(\s*["'](?P<path>[^"']+)["']\s*\)\s*(?:\.\s*\w+\s*\([^)]*\)\s*)*"""
+    r"""\.\s*(?:write_text|write_bytes|writelines|unlink|mkdir|touch|rename|replace|chmod|rmdir|symlink_to|hardlink_to)\s*\("""
+    # os.remove("p") / shutil.rmtree("p") / os.makedirs("p")
+    r"""|\bos\s*\.\s*(?:remove|unlink|rmdir|removedirs|rename|replace|mkdir|makedirs|chmod|chown|truncate)\s*\(\s*["'](?P<os>[^"']+)["']"""
+    r"""|\bshutil\s*\.\s*(?:rmtree|move|copy|copy2|copyfile|copytree)\s*\(\s*["'](?P<sh>[^"']+)["']""",
+)
 
 
 def _dequote(tok: str) -> str:
@@ -90,7 +103,7 @@ def _segment_targets(seg: str) -> list[str]:
     for m in _SED_INPLACE_RE.finditer(seg):
         out.extend([t for t in m.group(4).split() if not t.startswith("-")][1:])
     for m in _INTERP_WRITE_RE.finditer(seg):
-        out.append(m.group("path"))
+        out.extend(g for g in (m.group("open"), m.group("path"), m.group("os"), m.group("sh")) if g)
     if _GIT_WRITE_RE.search(seg):
         out.append(".git/")
     return out
@@ -99,11 +112,15 @@ def _segment_targets(seg: str) -> list[str]:
 def write_targets(cmd: str, cwd: str | None = None) -> list[str]:
     """Paths a shell command would create/modify/delete: redirect targets, arguments of
     write commands (rm/mv/cp/mkdir/touch/chmod/...), sed/perl -i files, interpreter
-    one-liner writes, and git write operations. `cd` inside the command is followed, so
-    `cd .claude && touch x` resolves to `.claude/x`. Reads are ignored."""
+    one-liner writes, and git write operations. Reads are ignored.
+
+    `cd` is followed so `cd .claude && touch x` resolves to `.claude/x`, but every directory
+    seen (including the one the command started in) stays a candidate: a `cd` in a pipeline or
+    a `cd -` cannot move a relative write out of a protected directory.
+    """
     unq = strip_heredocs(cmd)
     unq += " ; " + _substitutions(unq)          # command substitutions execute too
-    base = cwd or ""
+    bases: list[str] = [cwd or ""]
     targets: list[str] = []
     for seg in _SEGMENT_SPLIT_RE.split(unq):
         seg = seg.strip()
@@ -112,13 +129,21 @@ def write_targets(cmd: str, cwd: str | None = None) -> list[str]:
         cd = _CD_RE.match(seg)
         if cd:
             d = _dequote(cd.group("dir"))
-            base = d if os.path.isabs(d) else os.path.normpath(os.path.join(base or ".", d))
+            if d in ("-", "~", "$HOME", "$OLDPWD"):
+                continue                        # cannot resolve: keep the bases we have
+            nxt = d if os.path.isabs(d) else os.path.normpath(os.path.join(bases[-1] or ".", d))
+            if nxt not in bases:
+                bases.append(nxt)
             continue
         for t in _segment_targets(seg):
             t = _dequote(t)
             if not t or t in {"/dev/null", "/dev/stdout", "/dev/stderr", "&1", "&2"} or t.startswith("-"):
                 continue
-            targets.append(t if os.path.isabs(t) or not base else os.path.normpath(os.path.join(base, t)))
+            if os.path.isabs(t):
+                targets.append(t)
+                continue
+            for b in bases:
+                targets.append(os.path.normpath(os.path.join(b, t)) if b else t)
     return targets
 
 
@@ -259,11 +284,12 @@ def _strip_quoted(cmd: str) -> str:
 # Module aliasing (`import os as o`) is covered by matching the modules and the method names
 # separately rather than only `os.unlink`.
 _INLINE_PY_DENY_RE = re.compile(
-    r"open\s*\([^)]*(,\s*|mode\s*=\s*)['\"][wax+]"           # open(path, "w")
-    r"|\b(?:import|from)\s+(os|shutil|subprocess|pty|socket|ctypes|multiprocessing)\b"
-    r"|\bos\s*\.|\bshutil\s*\.|\bsubprocess\s*\.|\bPopen\b|\b__import__\b|\bexec\s*\(|\beval\s*\("
-    r"|\.\s*(write|write_text|write_bytes|writelines|unlink|remove|rmdir|rename|replace|mkdir|makedirs"
-    r"|touch|chmod|chown|rmtree|move|copy|copyfile|copytree|system|kill|killpg|truncate)\s*\("
+    r"""open\s*\([^)]*(?:,\s*|mode\s*=\s*)["'][wax+]"""            # open(p, "w")
+    r"""|\b(?:import|from)\s+(?:shutil|subprocess|pty|socket|ctypes|multiprocessing)\b"""
+    r"""|\bos\s*\.\s*(?:remove|unlink|rmdir|removedirs|rename|replace|mkdir|makedirs|chmod|chown"""
+    r"""|system|popen|exec[lv]p?e?|spawn\w*|kill|killpg|truncate|symlink|link)\b"""
+    r"""|\b(?:shutil|subprocess)\s*\.|\bPopen\b|\b__import__\b|\bexec\s*\(|\beval\s*\("""
+    r"""|\.\s*(?:write_text|write_bytes|writelines|unlink|rmdir|makedirs|mkdir|touch|rmtree|chmod|chown|rename)\s*\("""
 )
 
 

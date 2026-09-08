@@ -78,8 +78,9 @@ def build_diff(base: str | None, paths: list[str]) -> tuple[str, list[str]]:
     diff = r.stdout
     # Ask git for the names separately: `diff --git` headers quote and escape unusual
     # filenames, so parsing them breaks on non-ASCII or spaces.
-    name_args = ["diff", "--name-only", "-z"] + ([base] if base else ["HEAD"]) + path_args
-    nr = rndlib.git(*name_args)
+    nr = rndlib.git("diff", "--name-only", "-z", *([base] if base else ["HEAD"]), *path_args)
+    if nr.returncode != 0 and not base:          # fresh repository: no HEAD yet
+        nr = rndlib.git("diff", "--name-only", "-z", "--cached", *path_args)
     files = [f for f in nr.stdout.split("\0") if f] if nr.returncode == 0 else []
     if not base:
         u = [f for f in rndlib.git("ls-files", "--others", "--exclude-standard", "-z", *path_args).stdout.split("\0") if f]
@@ -257,6 +258,8 @@ def merge_round(prev: dict | None, codex: dict, round_no: int, ts: str, policy: 
                 existing["reopenCount"] = existing.get("reopenCount", 0) + 1
                 existing["description"] = raw.get("description", existing["description"])
                 existing["line"] = raw.get("line", existing.get("line"))
+                existing["severity"] = raw.get("severity", existing["severity"])
+                existing["actionable"] = bool(raw.get("actionable", raw.get("severity") != "info"))
                 existing.setdefault("statusHistory", []).append({"at": ts, "status": "open", "by": "codex", "note": f"re-reported in round {round_no}"})
                 warnings.append(f"{existing['id']} re-appeared after being confirmed fixed (reopenCount={existing['reopenCount']})")
             elif existing["status"] in ("false_positive", "accepted_risk"):

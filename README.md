@@ -43,7 +43,7 @@ cd my-rnd-workspace && rm -rf .git && git init -b main
 
 # 2. check the engine on your machine
 python3 .claude/scripts/rnd.py doctor        # tooling, hooks, schemas, policy
-python3 -m pytest .claude/tests -q           # 115 engine tests
+python3 -m pytest .claude/tests -q           # 133 engine tests
 
 # 3. start working - your cases are committed with the engine from here on
 python3 .claude/scripts/rnd.py new "<title>" --question "<your question>"

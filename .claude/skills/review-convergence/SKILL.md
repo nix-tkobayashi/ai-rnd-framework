@@ -50,8 +50,8 @@ Exit codes: `0` CLEAN & converged · `2` findings / not converged · `3` FAILED_
 |------|---------|--------------------|
 | `CONVERGED` | actionable findings 0, required tests PASS, clean rounds ≥ required (1 standard / 2 high) | dispatch Validator |
 | `NOT_CONVERGED` | unresolved / tests failing / need another CLEAN | next fix + round |
-| `FAILED_TO_CONVERGE` | round 5 reached | stop; report to the human; options: split the change, redesign, or `decide --outcome inconclusive --force --note` |
-| `REVIEW_OSCILLATION` | a finding re-opened ≥ 2 times (A → fix → B → fix → A) | case is BLOCKED; Lead arbitrates: pick a design, document it in `decision.md`, set the losing finding `accepted_risk --by lead --note` or redesign; then `rnd.py state <CASE> BUILDING --note "..."` and continue |
+| `FAILED_TO_CONVERGE` | round 5 reached | stop; report to the human. Options: split the change, redesign, or record `decide --outcome inconclusive --force --note`. To continue after arbitration use `rnd.py review reopen <CASE> --note "..." [--max-rounds N]`; round numbers only move forward, so earlier rounds stay intact. |
+| `REVIEW_OSCILLATION` | a finding re-opened ≥ 2 times (A → fix → B → fix → A) | case is BLOCKED; Lead arbitrates: pick a design, document it in `decision.md`, set the losing finding `accepted_risk --by lead --note` or redesign; then **`python3 .claude/scripts/rnd.py review reopen <CASE> --note "<what you arbitrated>"`** (this is the only thing that clears the blocking status and returns the case to BUILDING) and continue. Note that a case cleared this way still needs a real CLEAN round from Codex to converge. |
 
 Forced PASS, editing `findings.json` by hand, or deleting a round directory are prohibited. If Codex is unavailable, the case stays in REVIEWING; it does not proceed to validation.
 

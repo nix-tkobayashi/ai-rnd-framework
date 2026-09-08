@@ -47,6 +47,24 @@ Fixes for the blockers found by an independent Codex audit of the 0.5.0 tree.
 - Inline `python3 -c` for the validator is judged on module and method use, so aliasing an import
   no longer bypasses it.
 
+### Fixed - second review round
+- A finding confirmed fixed and then re-reported as a real defect now regains its severity and
+  `actionable` flag, so a regression cannot stay invisible to the gate.
+- Interpreter writes are matched on the receiver, so `Path("p").write_text(...)`, `os.remove("p")`
+  and `shutil.rmtree("p")` are recognised; a bare `open(p)` read no longer counts as a write.
+- `git -C "dir with spaces"` and the other global options accept quoted arguments.
+- `cd` tracking keeps every directory seen as a candidate, so a `cd` in a pipeline, a `cd -`, or one
+  injected inside quoted text can no longer move a relative write out of a protected directory.
+- The validator's inline-python check no longer denies ordinary reads, `os.getcwd()` or string
+  methods such as `.replace(...)`.
+- An escaped substitution in a heredoc body is inert and is no longer treated as a command.
+- `review reopen` raises the round budget instead of resetting the counter; round numbers name the
+  directories under `reviews/`, so reusing them overwrote review history.
+- `codex_review.py` falls back to the staged diff for the file-name query in a repository with no
+  commits, matching the patch it already produced.
+- The oscillation / failed-to-converge recovery in the `review-convergence` skill now points at
+  `review reopen`; the previously documented `state ... BUILDING` never cleared the blocking status.
+
 ### Changed
 - README says plainly what the hooks are: defence in depth, not a sandbox. Codex's `-s read-only`
   is the one real sandbox in the loop.

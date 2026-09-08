@@ -844,10 +844,14 @@ def cmd_review_reopen(a: argparse.Namespace) -> int:
         die("--note is required: record what you arbitrated before another round")
     was = rv["status"]
     rv["status"] = "in_progress"
-    if a.reset_rounds:
-        rv["rounds"] = 0
+    # Round numbers name the directories under reviews/, so they only ever go forward.
+    # More budget is granted by raising maxRounds, never by resetting the counter.
     if a.max_rounds:
+        if a.max_rounds <= rv["rounds"]:
+            die(f"--max-rounds must exceed the {rv['rounds']} rounds already recorded")
         rv["maxRounds"] = a.max_rounds
+    elif rv["rounds"] >= rv["maxRounds"]:
+        rv["maxRounds"] = rv["rounds"] + 1
     rv["consecutiveClean"] = 0
     if c["state"] in ("BLOCKED", "FAILED_TO_CONVERGE"):
         transition(c, "BUILDING", by="lead", note=a.note, force=True)
@@ -1268,7 +1272,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = vs.add_parser("init"); p.add_argument("case"); p.add_argument("--required-test", action="append"); p.add_argument("--diff-base"); p.add_argument("--risk", choices=["standard", "high"]); p.add_argument("--max-rounds", type=int); p.add_argument("--not-required", action="store_true"); p.add_argument("--note"); p.set_defaults(fn=cmd_review_init)
     p = vs.add_parser("status"); p.add_argument("case"); p.set_defaults(fn=cmd_review_status)
     p = vs.add_parser("reopen"); p.add_argument("case"); p.add_argument("--note", required=True)
-    p.add_argument("--reset-rounds", action="store_true"); p.add_argument("--max-rounds", type=int); p.set_defaults(fn=cmd_review_reopen)
+    p.add_argument("--max-rounds", type=int, help="raise the round budget (default: current rounds + 1)"); p.set_defaults(fn=cmd_review_reopen)
 
     p = sp.add_parser("findings"); p.add_argument("case"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_findings)
     f = sp.add_parser("finding"); fs = f.add_subparsers(dest="sub", required=True)

@@ -372,6 +372,87 @@ def test_reviewer_shell_bypasses_are_closed(ws: Path, cmd: str, agent: str, expe
     assert hook(ws, "reviewer-shell-guard.py", payload).returncode == expected, cmd
 
 
+@pytest.mark.parametrize("cmd,agent,expected", [
+    # writes through an interpreter, whatever the spelling
+    ("python3 -c \"from pathlib import Path; Path('.claude/x').write_text('y')\"", "builder", 2),
+    ("python3 -c \"import os; os.remove('.claude/rnd-policy.json')\"", "builder", 2),
+    ("python3 -c \"import shutil; shutil.rmtree('.claude')\"", "builder", 2),
+    # git global options, quoted or not
+    (GIT + ' -C "/tmp/a b" reset --hard', "", 2),
+    (GIT + " -C /tmp/a reset --hard", "", 2),
+    # a cd in a pipeline, a `cd -`, or one injected inside quoted text cannot move a write
+    ("cd /tmp | cat; " + TOUCH + " .claude/x", "builder", 2),
+    ("cd /tmp; cd -; " + TOUCH + " .claude/x", "builder", 2),
+    ("echo 'x; cd /tmp; y'; " + TOUCH + " .claude/x", "builder", 2),
+    # ... while ordinary reads and scratch writes keep working
+    ("python3 -c \"print(open('.claude/rnd-policy.json').read())\"", "builder", 0),
+    ("python3 -c \"import os; print(os.getcwd())\"", "builder", 0),
+    ("cd /tmp && " + TOUCH + " scratch.txt", "builder", 0),
+    ("cat > notes.md <<'EOF'\ninert: \\$(" + GIT + " reset --hard)\nEOF", "", 0),
+])
+def test_safety_gate_round2(ws: Path, cmd: str, agent: str, expected: int) -> None:
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(ws)}
+    if agent:
+        payload["agent_type"] = agent
+    assert hook(ws, "safety-gate.py", payload).returncode == expected, cmd
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("python3 -c \"import os; print(os.getcwd())\"", 0),
+    ("python3 -c \"print('a'.replace('a','b'))\"", 0),
+    ("python3 -c \"from pathlib import Path; Path('x').write_text('y')\"", 2),
+    ("python3 -c \"import subprocess; subprocess.run(['ls'])\"", 2),
+])
+def test_validator_inline_python(ws: Path, cmd: str, expected: int) -> None:
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "agent_type": "validator", "cwd": str(ws)}
+    assert hook(ws, "reviewer-shell-guard.py", payload).returncode == expected, cmd
+
+
+def test_regression_of_a_confirmed_fixed_finding_is_actionable(ws: Path) -> None:
+    """An item confirmed fixed, then re-reported as a real defect, must block the gate."""
+    cid = setup_impl_case(ws)
+    info = finding("style nit", sev="info", actionable=False)
+    real = finding("style nit", sev="high", actionable=True)     # same fingerprint
+    env = fake_codex(ws, [
+        {"verdict": "FINDINGS", "summary": "", "previousFindingsResolution": [], "findings": [info]},
+        {"verdict": "CLEAN", "summary": "", "previousFindingsResolution": [
+            {"id": "F-01-001", "resolution": "confirmed_fixed", "comment": "ok"}], "findings": []},
+        {"verdict": "FINDINGS", "summary": "", "previousFindingsResolution": [], "findings": [real]},
+    ])
+    run(ws, "codex_review.py", cid, check=False, env=env)
+    run(ws, "codex_review.py", cid, check=False, env=env)
+    assert case_json(ws, cid)["review"]["status"] == "converged"
+    r = run(ws, "codex_review.py", cid, check=False, env=env)      # regression re-reported
+    fj = json.loads(next((ws / ".rnd" / "cases").glob(f"{cid}*/reviews/round-03/findings.json")).read_text())
+    f = fj["findings"][0]
+    assert f["status"] == "open" and f["severity"] == "high" and f["actionable"] is True
+    assert f["reopenCount"] >= 1
+    assert r.returncode == 2 and run(ws, "review_gate.py", cid, check=False).returncode == 2
+
+
+def test_review_reopen_never_reuses_round_numbers(ws: Path) -> None:
+    cid = setup_impl_case(ws)
+    run(ws, "rnd.py", "review", "init", cid, "--max-rounds", "2")
+    env = fake_codex(ws, [
+        {"verdict": "FINDINGS", "summary": "", "previousFindingsResolution": [], "findings": [finding("bug A")]},
+        {"verdict": "FINDINGS", "summary": "", "previousFindingsResolution": [
+            {"id": "F-01-001", "resolution": "still_open", "comment": ""}], "findings": []},
+        {"verdict": "CLEAN", "summary": "", "previousFindingsResolution": [
+            {"id": "F-01-001", "resolution": "confirmed_fixed", "comment": "ok"}], "findings": []},
+    ])
+    run(ws, "codex_review.py", cid, check=False, env=env)
+    run(ws, "rnd.py", "finding", "set", cid, "F-01-001", "fixed_pending_review")
+    r = run(ws, "codex_review.py", cid, check=False, env=env)
+    assert r.returncode == 3 and case_json(ws, cid)["review"]["status"] == "failed_to_converge"
+    run(ws, "rnd.py", "review", "reopen", cid, "--note", "split the change")
+    c = case_json(ws, cid)
+    assert c["review"]["rounds"] == 2 and c["review"]["maxRounds"] == 3, "budget grows, counter does not reset"
+    r = run(ws, "codex_review.py", cid, check=False, env=env)
+    assert r.returncode == 0
+    rounds = sorted(p.name for p in next((ws / ".rnd" / "cases").glob(f"{cid}*/reviews")).iterdir())
+    assert rounds == ["round-01", "round-02", "round-03"], rounds
+
+
 def test_decide_enforces_completion_criteria(ws: Path) -> None:
     cid = new_case(ws)
     r = run(ws, "rnd.py", "decide", cid, "--outcome", "adopt", "--summary", "go", check=False)
