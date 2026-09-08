@@ -66,8 +66,13 @@ def evaluate(case_dir: Path, case: dict, policy: dict | None = None) -> dict:
             out["reasons"].append("required tests FAIL in the latest round")
     consecutive = rv.get("consecutiveClean", 0)
     need = rv.get("requiredCleanRounds", 1)
-    if not unresolved and fj["verdict"] == "CLEAN" and consecutive < need:
-        out["reasons"].append(f"high-risk case needs {need} consecutive CLEAN rounds (have {consecutive})")
+    # A case converges only on Codex's own CLEAN verdict. Clearing the last finding by any
+    # other route (accepted_risk, false_positive) still needs a confirming round, so the
+    # count is checked whatever the latest verdict was.
+    if consecutive < need:
+        out["reasons"].append(
+            f"needs {need} consecutive CLEAN round(s) from Codex, have {consecutive}"
+            + (f" (latest verdict {fj['verdict']})" if fj["verdict"] != "CLEAN" else ""))
     if not out["reasons"]:
         out["verdict"] = "CONVERGED"
     elif rv["rounds"] >= rv["maxRounds"]:

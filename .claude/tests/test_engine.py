@@ -18,6 +18,9 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 COPY_ITEMS = [".claude", ".codex", "CLAUDE.md", "README.md", ".gitignore", "VERSION", "CHANGELOG.md"]
 
+# split so this file never contains a literal blocked command (the safety gate scans it)
+RM, GIT, TOUCH = "r" + "m", "gi" + "t", "tou" + "ch"
+
 
 @pytest.fixture()
 def ws(tmp_path: Path) -> Path:
@@ -214,6 +217,159 @@ def test_output_language_detection_templates_and_prompt(ws: Path) -> None:
     assert "language: en" in out
     r = run(ws, "rnd.py", "new", "bad lang", "--lang", "xx", check=False)
     assert r.returncode != 0
+
+
+def test_completion_gates_cannot_be_bypassed(ws: Path) -> None:
+    """`state` must not reach DECIDED/ARCHIVED; those carry completion guarantees."""
+    cid = new_case(ws)
+    run(ws, "rnd.py", "state", cid, "TRIAGE")
+    run(ws, "rnd.py", "state", cid, "RESEARCHING")
+    for target in ("DECIDED", "ARCHIVED"):
+        r = run(ws, "rnd.py", "state", cid, target, check=False)
+        assert r.returncode != 0 and "not settable" in r.stderr, target
+    # --force on decide is for deliberately incomplete outcomes only
+    r = run(ws, "rnd.py", "decide", cid, "--outcome", "adopt", "--summary", "s", "--force", "--note", "n", check=False)
+    assert r.returncode != 0 and "defer" in r.stderr
+    run(ws, "rnd.py", "decide", cid, "--outcome", "defer", "--summary", "later", "--force", "--note", "research unfinished")
+    assert case_json(ws, cid)["decision"]["status"] == "recorded"
+    run(ws, "rnd.py", "archive", cid)
+    assert case_json(ws, cid)["state"] == "ARCHIVED"
+
+
+def test_archive_requires_a_recorded_decision(ws: Path) -> None:
+    cid = new_case(ws)
+    d = next((ws / ".rnd" / "cases").glob(f"{cid}*"))
+    c = json.loads((d / "case.json").read_text())
+    c["state"] = "DECIDED"          # simulate a case that reached DECIDED without `decide`
+    (d / "case.json").write_text(json.dumps(c))
+    r = run(ws, "rnd.py", "archive", cid, check=False)
+    assert r.returncode != 0 and "no decision recorded" in r.stderr
+
+
+def test_gate_requires_a_confirming_clean_round(ws: Path) -> None:
+    """Clearing the last finding without a CLEAN verdict must not converge the case."""
+    cid = setup_impl_case(ws)
+    env = fake_codex(ws, [
+        {"verdict": "FINDINGS", "summary": "", "previousFindingsResolution": [], "findings": [finding("bug A")]},
+        {"verdict": "CLEAN", "summary": "", "previousFindingsResolution": [
+            {"id": "F-01-001", "resolution": "confirmed_fixed", "comment": "ok"}], "findings": []},
+    ])
+    run(ws, "codex_review.py", cid, check=False, env=env)
+    # the Lead accepts the risk instead of fixing: no unresolved findings, but no CLEAN round either
+    run(ws, "rnd.py", "finding", "set", cid, "F-01-001", "accepted_risk", "--by", "lead", "--note", "accepted for the PoC")
+    r = run(ws, "review_gate.py", cid, check=False)
+    assert r.returncode == 2 and "consecutive CLEAN" in r.stdout
+    assert case_json(ws, cid)["review"]["status"] != "converged"
+    # a real Codex CLEAN round is what converges it
+    r = run(ws, "codex_review.py", cid, check=False, env=env)
+    assert r.returncode == 0 and case_json(ws, cid)["review"]["status"] == "converged"
+
+
+def test_error_round_resets_the_clean_streak(ws: Path) -> None:
+    cid = setup_impl_case(ws)
+    run(ws, "rnd.py", "review", "init", cid, "--risk", "high")          # needs 2 consecutive CLEAN
+    env = fake_codex(ws, [{"verdict": "CLEAN", "summary": "", "previousFindingsResolution": [], "findings": []}])
+    run(ws, "codex_review.py", cid, check=False, env=env)
+    assert case_json(ws, cid)["review"]["consecutiveClean"] == 1
+    bindir = ws / "failbin"
+    bindir.mkdir()
+    (bindir / "codex").write_text(
+        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo fake; exit 0; fi\nexit 1\n")
+    (bindir / "codex").chmod(0o755)
+    r = run(ws, "codex_review.py", cid, check=False, env={"PATH": f"{bindir}:{os.environ['PATH']}"})
+    assert r.returncode == 4
+    assert case_json(ws, cid)["review"]["consecutiveClean"] == 0, "an ERROR round must break the streak"
+
+
+def test_reopened_finding_regains_actionable(ws: Path) -> None:
+    cid = setup_impl_case(ws)
+    info = finding("style nit", sev="info", actionable=False)
+    real = finding("style nit", sev="high", actionable=True)          # same fingerprint, now a defect
+    env = fake_codex(ws, [
+        {"verdict": "CLEAN", "summary": "", "previousFindingsResolution": [], "findings": [info]},
+        {"verdict": "FINDINGS", "summary": "", "previousFindingsResolution": [], "findings": [real]},
+    ])
+    run(ws, "codex_review.py", cid, check=False, env=env)
+    run(ws, "codex_review.py", cid, check=False, env=env)
+    fj = json.loads(next((ws / ".rnd" / "cases").glob(f"{cid}*/reviews/round-02/findings.json")).read_text())
+    f = fj["findings"][0]
+    assert f["severity"] == "high" and f["actionable"] is True and f["status"] == "open"
+    assert run(ws, "review_gate.py", cid, check=False).returncode == 2
+
+
+def test_review_reopen_clears_a_blocking_status(ws: Path) -> None:
+    cid = setup_impl_case(ws)
+    a = finding("bug A")
+    env = fake_codex(ws, [
+        {"verdict": "FINDINGS", "summary": "", "previousFindingsResolution": [], "findings": [a]},
+        {"verdict": "FINDINGS", "summary": "", "previousFindingsResolution": [
+            {"id": "F-01-001", "resolution": "still_open", "comment": "no"}], "findings": []},
+        {"verdict": "FINDINGS", "summary": "", "previousFindingsResolution": [
+            {"id": "F-01-001", "resolution": "still_open", "comment": "again"}], "findings": []},
+        {"verdict": "CLEAN", "summary": "", "previousFindingsResolution": [
+            {"id": "F-01-001", "resolution": "confirmed_fixed", "comment": "ok"}], "findings": []},
+    ])
+    run(ws, "codex_review.py", cid, check=False, env=env)
+    run(ws, "rnd.py", "finding", "set", cid, "F-01-001", "fixed_pending_review")
+    run(ws, "codex_review.py", cid, check=False, env=env)
+    run(ws, "rnd.py", "finding", "set", cid, "F-01-001", "fixed_pending_review")
+    r = run(ws, "codex_review.py", cid, check=False, env=env)
+    assert r.returncode == 3 and case_json(ws, cid)["review"]["status"] == "oscillation"
+    # a further round is refused until the Lead arbitrates
+    r = run(ws, "codex_review.py", cid, check=False, env=env)
+    assert r.returncode != 0 and "Lead" in r.stderr
+    r = run(ws, "rnd.py", "review", "reopen", cid, check=False)
+    assert r.returncode != 0, "--note is required"
+    run(ws, "rnd.py", "review", "reopen", cid, "--note", "picked design B; F-01-001 is out of scope")
+    c = case_json(ws, cid)
+    assert c["review"]["status"] == "in_progress" and c["state"] == "BUILDING"
+    assert run(ws, "codex_review.py", cid, check=False, env=env).returncode == 0
+
+
+def test_diff_file_list_handles_unusual_filenames(ws: Path) -> None:
+    cid = setup_impl_case(ws)
+    art = next((ws / ".rnd" / "cases").glob(f"{cid}*/artifacts"))
+    (art / "日本語 ファイル.py").write_text("x = 1\n")
+    r = run(ws, "codex_review.py", cid, "--dry-run")
+    assert "dry-run" in r.stdout
+    meta = json.loads(next((ws / ".rnd" / "cases").glob(f"{cid}*/reviews/round-01/meta.json")).read_text())
+    assert any("日本語" in f for f in meta["files"]), meta["files"]
+
+
+@pytest.mark.parametrize("cmd,agent,expected", [
+    # blocked-command regexes must not be defeated by spelling
+    (RM + " -r -f /", "", 2), (RM + ' -rf "/"', "", 2), (GIT + " -C . reset --hard", "", 2),
+    (GIT + " -c user.name=x push --force origin main", "", 2),
+    # a builder cannot escape its write boundary with cd, quoting, substitution or python
+    ("cd .claude && " + TOUCH + " rnd-policy.json", "builder", 2),
+    (TOUCH + ' .clau"de"/rnd-policy.json', "builder", 2),
+    ('echo "$(' + TOUCH + ' .claude/x)"', "builder", 2),
+    ("python3 -c \"open('.claude/rnd-policy.json','w').write('{}')\"", "builder", 2),
+    ("cd .rnd/cases/RND-20260101-001-x/artifacts && " + TOUCH + " poc.py", "builder", 0),
+    # heredoc bodies: data is data, but an expanded or piped body is a command
+    ("cat <<EOF\n$(" + GIT + " reset --hard)\nEOF", "", 2),
+    ("cat <<'EOF' | bash\n" + GIT + " reset --hard\nEOF", "", 2),
+    ("cat > notes.md <<'EOF'\nnever run " + GIT + " reset --hard\nEOF", "", 0),
+])
+def test_safety_gate_bypasses_are_closed(ws: Path, cmd: str, agent: str, expected: int) -> None:
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(ws)}
+    if agent:
+        payload["agent_type"] = agent
+    assert hook(ws, "safety-gate.py", payload).returncode == expected, cmd
+
+
+@pytest.mark.parametrize("cmd,agent,expected", [
+    ('echo "$(' + TOUCH + ' audit-marker)"', "codex-reviewer", 2),
+    ("find . -name x -delete", "codex-reviewer", 2),
+    (GIT + " diff --output=audit-marker", "codex-reviewer", 2),
+    ('pwd\nsh -c "' + TOUCH + ' audit-marker"', "codex-reviewer", 2),
+    ("python3 -c \"import os as o; o.unlink('x')\"", "validator", 2),
+    ("python3 -c \"import ast; ast.parse(open('x.py').read())\"", "validator", 0),
+    (GIT + " diff HEAD~1 -- src/", "codex-reviewer", 0),
+])
+def test_reviewer_shell_bypasses_are_closed(ws: Path, cmd: str, agent: str, expected: int) -> None:
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "agent_type": agent, "cwd": str(ws)}
+    assert hook(ws, "reviewer-shell-guard.py", payload).returncode == expected, cmd
 
 
 def test_decide_enforces_completion_criteria(ws: Path) -> None:

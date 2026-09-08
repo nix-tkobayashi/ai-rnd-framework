@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ai-rnd-workspace/schemas/case.schema.json",
   "title": "R&D Case",
-  "description": "Single Source of Truth for one R&D Case (rnd/<CASE>/case.json).",
+  "description": "Single Source of Truth for one R&D Case (..rnd/cases/cases/<CASE>/case.json).",
   "type": "object",
   "additionalProperties": false,
   "required": [

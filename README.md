@@ -23,13 +23,14 @@ ai-rnd-workspace/
     └── knowledge/   shared/  candidates/  catalog.json
 ```
 
-Paths are configured in `.claude/rnd-policy.json` → `layout`; the scripts read them from there, so the layout can be changed in one place.
+Paths come from `.claude/rnd-policy.json` → `layout`, which `.claude/scripts/rndlib.py` reads. Moving the data directory is a policy edit; moving `.claude/` itself also needs the hook commands in `.claude/settings.json` updated, because Claude Code resolves those before the policy is read.
 
 Full design: [`SPEC.md`](SPEC.md). Operating manual for Claude Code: [`CLAUDE.md`](CLAUDE.md).
 
 ## Requirements
 - Python 3.10+ (no third-party packages required; `jsonschema` optional for stricter validation)
 - Git, coreutils `timeout`
+- `pytest` only to run the engine tests (`pip install pytest`, or `uv run --no-project --with pytest ...`)
 - [Claude Code](https://code.claude.com) (project settings in `.claude/`)
 - [Codex CLI](https://github.com/openai/codex) on `PATH` (`codex exec` is used for review rounds)
 
@@ -42,7 +43,7 @@ cd my-rnd-workspace && rm -rf .git && git init -b main
 
 # 2. check the engine on your machine
 python3 .claude/scripts/rnd.py doctor        # tooling, hooks, schemas, policy
-python3 -m pytest .claude/tests -q           # 89 engine tests
+python3 -m pytest .claude/tests -q           # 115 engine tests
 
 # 3. start working - your cases are committed with the engine from here on
 python3 .claude/scripts/rnd.py new "<title>" --question "<your question>"
@@ -71,6 +72,10 @@ User question → R&D Lead → existing-case search → resume | create
   → Validator (behaviour / acceptance criteria / reproducibility) → Decision (≠ research) → Archive → Knowledge promotion
 ```
 
+### What the guardrails do and do not do
+
+The PreToolUse hooks (`safety-gate`, `builder-write-guard`, `reviewer-shell-guard`) block destructive commands and keep each agent inside its write boundary. They parse shell text, so they are **defence in depth, not a sandbox**: they stop the mistakes an agent actually makes, not a determined attempt to get around them. The one real sandbox in the loop is Codex, which runs with `-s read-only`. Run this framework on code you are willing to have an agent modify, and keep the Claude Code permission settings as the outer boundary.
+
 ## Key guarantees
 | Principle | Enforced by |
 |-----------|-------------|
@@ -78,7 +83,7 @@ User question → R&D Lead → existing-case search → resume | create
 | Claude-written code is reviewed by Codex; Claude cannot close a finding; every fix goes back to Codex | `.claude/scripts/codex_review.py`, `rnd.py finding set` (Claude may only set `fixed_pending_review` / `disputed`) |
 | Convergence rules (0 actionable findings + tests PASS; 2× CLEAN for high risk; maxRounds 5; no forced PASS) | `.claude/scripts/review_gate.py`, `.claude/rnd-policy.json` |
 | Oscillation (same finding re-opened) escalates to the Lead | fingerprints + `reopenCount` in `findings.json` |
-| Codex reviewer never edits code; read-only agents never write; Builders cannot touch the engine or case records | `.claude/hooks/*.py` PreToolUse hooks, Codex `-s read-only` |
+| Codex runs read-only; agent roles have write boundaries enforced on the common paths | Codex `-s read-only` (a real sandbox) plus `.claude/hooks/*.py` PreToolUse hooks (defence in depth, not a sandbox - see below) |
 | Case files are the single source of truth, resumable from any session | `.rnd/cases/<CASE>/case.json`, `rnd.py resume`, `handoff.md` |
 | Evidence carries provenance and freshness; stale evidence is flagged | `.claude/schemas/evidence.schema.json`, `rnd.py evidence check` |
 | Knowledge is promoted deliberately, never automatically | `.rnd/knowledge/candidates/` → review → `.rnd/knowledge/shared/` |

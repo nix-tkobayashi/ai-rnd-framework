@@ -76,9 +76,13 @@ def build_diff(base: str | None, paths: list[str]) -> tuple[str, list[str]]:
     if r.returncode != 0:
         die(f"git diff failed: {r.stderr.strip()}")
     diff = r.stdout
-    files = [l.split(" b/", 1)[1] for l in diff.splitlines() if l.startswith("diff --git ")]
+    # Ask git for the names separately: `diff --git` headers quote and escape unusual
+    # filenames, so parsing them breaks on non-ASCII or spaces.
+    name_args = ["diff", "--name-only", "-z"] + ([base] if base else ["HEAD"]) + path_args
+    nr = rndlib.git(*name_args)
+    files = [f for f in nr.stdout.split("\0") if f] if nr.returncode == 0 else []
     if not base:
-        u = rndlib.git("ls-files", "--others", "--exclude-standard", *path_args).stdout.split()
+        u = [f for f in rndlib.git("ls-files", "--others", "--exclude-standard", "-z", *path_args).stdout.split("\0") if f]
         for f in u:
             p = ROOT / f
             if not p.is_file() or p.stat().st_size > 200_000 or (not paths and _excluded(f)):
@@ -261,6 +265,8 @@ def merge_round(prev: dict | None, codex: dict, round_no: int, ts: str, policy: 
                 existing["description"] = raw.get("description", existing["description"])
                 existing["line"] = raw.get("line", existing.get("line"))
                 existing["severity"] = raw.get("severity", existing["severity"])
+                # an item first filed as info can come back as a real defect
+                existing["actionable"] = bool(raw.get("actionable", raw.get("severity") != "info"))
                 if existing["status"] == "fixed_pending_review":
                     existing["status"] = "open"
                     existing["reopenCount"] = existing.get("reopenCount", 0) + 1
@@ -379,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
         write_json(rdir / "meta.json", meta)
         rv["rounds"] = round_no
         rv["lastRoundVerdict"] = "ERROR"
+        rv["consecutiveClean"] = 0   # an unusable round breaks the CLEAN streak
         rv["status"] = "in_progress"
         add_history(c, "review.round", by="codex", note=f"round {round_no}: ERROR (exit {code})")
         save_case(d, c, action_by="codex-reviewer", action=f"review round {round_no}: ERROR")

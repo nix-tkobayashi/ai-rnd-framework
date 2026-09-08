@@ -8,6 +8,53 @@ The published history starts at 0.5.0, the first release meant to be shared.
 Versions 0.1.0-0.4.0 were developed privately and their commits are not part of
 this repository; the entries below record what changed in each of them.
 
+## [0.6.0] - 2026-09-08
+
+Fixes for the blockers found by an independent Codex audit of the 0.5.0 tree.
+
+### Fixed - completion and convergence guarantees
+- `rnd.py state` can no longer reach `DECIDED` or `ARCHIVED`. Those states carry the completion
+  criteria, so they are reachable only through `decide` / `archive`, which check them. Previously
+  `state <CASE> DECIDED` followed by `archive` produced an archived case with
+  `decision.status=pending` and no research done.
+- `archive` requires a recorded decision, not just the `DECIDED` state.
+- `decide --force` is restricted to the `defer` / `inconclusive` outcomes it was documented for;
+  `adopt` / `reject` / `partial` require the completion criteria to be met.
+- The review gate always requires the configured number of consecutive CLEAN rounds from Codex.
+  Clearing the last finding by another route (`accepted_risk`, `false_positive`) no longer
+  converges a case that never had a CLEAN round.
+- An ERROR round resets `consecutiveClean`, so CLEAN then ERROR then CLEAN no longer counts as two
+  consecutive clean rounds for a high-risk case.
+- A finding re-reported at a higher severity regains `actionable`, so an item first filed as `info`
+  cannot stay invisible to the gate.
+- `rnd.py review reopen <CASE> --note ...` clears a `REVIEW_OSCILLATION` / `FAILED_TO_CONVERGE`
+  status after Lead arbitration. The documented recovery previously left the case unable to run
+  another round.
+- `codex_review.py` takes the reviewed file list from `git diff --name-only -z` instead of parsing
+  `diff --git` headers, which raised `IndexError` on quoted or non-ASCII filenames.
+
+### Fixed - guardrails
+- Heredoc bodies: an unquoted delimiter expands command substitutions, and a body piped into an
+  interpreter runs. Both are now scanned; only inert data bodies are skipped.
+- Command substitution inside double quotes is scanned instead of being stripped with the quotes.
+- `write_targets` follows `cd`, removes shell quoting, and recognises interpreter one-liner writes,
+  so a builder cannot leave its write boundary by those routes.
+- Blocked patterns now catch `rm` with its flags written separately, quoted targets, and the
+  `git -C <dir>` / `git -c key=value` spellings of the destructive git commands;
+  `git update-ref -d` was added.
+- Read-only agents: newlines separate commands, option-style denials match `--output=file`,
+  `find` with `-delete` / `-exec` is denied, and `curl` is no longer on the validator profile.
+- Inline `python3 -c` for the validator is judged on module and method use, so aliasing an import
+  no longer bypasses it.
+
+### Changed
+- README says plainly what the hooks are: defence in depth, not a sandbox. Codex's `-s read-only`
+  is the one real sandbox in the loop.
+- The `layout` policy claim is qualified: moving `.claude/` also needs the hook commands in
+  `settings.json` edited, because Claude Code resolves those before the policy is read.
+- `pytest` is listed as a requirement for running the engine tests.
+- Stale pre-0.4.0 paths removed from the schemas, `.codex/config.toml` and `.rnd/knowledge/README.md`.
+
 ## [0.5.0] - 2026-09-08
 
 ### Fixed
@@ -48,7 +95,7 @@ this repository; the entries below record what changed in each of them.
 ## [0.2.1] - 2026-09-08
 
 ### Fixed
-- `rnd.py`: every mutating command now regenerates `rnd/index.json`, `rnd/INDEX.md` and `knowledge/catalog.json`, so `rnd_doctor.py` no longer warns "index out of date" after routine case updates (the v0.2.0 tag carries one failing engine test for this reason).
+- `rnd.py`: every mutating command now regenerates `rnd/index.json`, `rnd/INDEX.md` and `knowledge/catalog.json`, so `rnd_doctor.py` no longer warns "index out of date" after routine case updates (0.2.0 shipped with one failing engine test for this reason).
 
 ## [0.2.0] - 2026-09-08
 

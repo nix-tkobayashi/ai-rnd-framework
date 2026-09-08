@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ai-rnd-workspace/schemas/evidence.schema.json",
   "title": "Evidence Ledger",
-  "description": "rnd/<CASE>/research/evidence.json - facts with provenance, separated from AI interpretation.",
+  "description": "..rnd/cases/cases/<CASE>/research/evidence.json - facts with provenance, separated from AI interpretation.",
   "type": "object",
   "additionalProperties": false,
   "required": [

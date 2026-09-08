@@ -558,10 +558,21 @@ def cmd_handoff(a: argparse.Namespace) -> int:
 # state / next / action
 # --------------------------------------------------------------------------- #
 
+# States that carry completion guarantees; they are reachable only through the
+# commands that check those guarantees (`decide`, `archive`), never through `state`.
+GATED_STATES = {
+    "DECIDED": "record the decision with `rnd.py decide <CASE> --outcome ... --summary ...` "
+               "(it enforces the completion criteria for the case type)",
+    "ARCHIVED": "archive with `rnd.py archive <CASE>` after the decision is recorded",
+}
+
+
 def cmd_state(a: argparse.Namespace) -> int:
     d, c = load_case(a.case)
     if a.force and not a.note:
         die("--force requires --note explaining why")
+    if a.state in GATED_STATES:
+        die(f"'{a.state}' is not settable with `state`: {GATED_STATES[a.state]}")
     try:
         transition(c, a.state, by=a.by, note=a.note or "", force=a.force)
     except ValueError as exc:
@@ -822,6 +833,32 @@ def cmd_review_init(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review_reopen(a: argparse.Namespace) -> int:
+    """Lead arbitration after REVIEW_OSCILLATION / FAILED_TO_CONVERGE: clear the blocking
+    review status so another Codex round can run. Requires a note saying what was decided."""
+    d, c = load_case(a.case)
+    rv = c["review"]
+    if rv["status"] not in ("oscillation", "failed_to_converge"):
+        die(f"review status is '{rv['status']}' - nothing to reopen")
+    if not a.note:
+        die("--note is required: record what you arbitrated before another round")
+    was = rv["status"]
+    rv["status"] = "in_progress"
+    if a.reset_rounds:
+        rv["rounds"] = 0
+    if a.max_rounds:
+        rv["maxRounds"] = a.max_rounds
+    rv["consecutiveClean"] = 0
+    if c["state"] in ("BLOCKED", "FAILED_TO_CONVERGE"):
+        transition(c, "BUILDING", by="lead", note=a.note, force=True)
+    add_history(c, "review.reopen", by="lead", frm=was, to="in_progress", note=a.note)
+    c["nextAction"] = "Apply the arbitrated fix, run the required tests, then the next Codex round"
+    save_case(d, c, action=f"review reopened from {was}")
+    cmd_handoff(argparse.Namespace(case=c["id"], quiet=True))
+    print(f"{c['id']}: review reopened (was {was}); rounds {rv['rounds']}/{rv['maxRounds']}")
+    return 0
+
+
 def cmd_review_status(a: argparse.Namespace) -> int:
     return subprocess.call([sys.executable, str(rndlib.SCRIPTS_DIR / "review_gate.py"), a.case])
 
@@ -1076,6 +1113,9 @@ def completion_gaps(case_dir: Path, c: dict) -> list[str]:
 def cmd_decide(a: argparse.Namespace) -> int:
     d, c = load_case(a.case)
     gaps = completion_gaps(d, c)
+    if a.force and a.outcome not in ("defer", "inconclusive"):
+        die("--force records a decision whose completion criteria are unmet, so the outcome must be "
+            "'defer' or 'inconclusive'. Finish the missing steps to record adopt/reject/partial.")
     if gaps and not a.force:
         eprint("completion criteria not met:")
         for g in gaps:
@@ -1098,7 +1138,7 @@ def cmd_decide(a: argparse.Namespace) -> int:
     if a.force:
         body += f"\n\n> Recorded with --force. Unmet criteria: {'; '.join(gaps)}. Note: {a.note}\n"
     write_text(d / "decision.md", body)
-    transition(c, "DECIDED", by=a.by, note=a.note or a.summary[:120], force=True)
+    transition(c, "DECIDED", by=a.by, note=a.note or a.summary[:120], force=True)  # gated above
     c["nextAction"] = "ARCHIVE: promote reusable knowledge (knowledge-promotion skill) then rnd.py archive"
     save_case(d, c, action_by=a.by, action=f"decision recorded: {a.outcome}")
     cmd_handoff(argparse.Namespace(case=c["id"], quiet=True))
@@ -1111,6 +1151,8 @@ def cmd_archive(a: argparse.Namespace) -> int:
     d, c = load_case(a.case)
     if c["state"] != "DECIDED" and not a.force:
         die(f"state is {c['state']}, must be DECIDED (or --force --note)")
+    if c["decision"]["status"] != "recorded" and not a.force:
+        die("no decision recorded - run `rnd.py decide` first (or --force --note)")
     if a.force and not a.note:
         die("--force requires --note")
     transition(c, "ARCHIVED", by=a.by, note=a.note or "", force=a.force)
@@ -1225,6 +1267,8 @@ def build_parser() -> argparse.ArgumentParser:
     v = sp.add_parser("review"); vs = v.add_subparsers(dest="sub", required=True)
     p = vs.add_parser("init"); p.add_argument("case"); p.add_argument("--required-test", action="append"); p.add_argument("--diff-base"); p.add_argument("--risk", choices=["standard", "high"]); p.add_argument("--max-rounds", type=int); p.add_argument("--not-required", action="store_true"); p.add_argument("--note"); p.set_defaults(fn=cmd_review_init)
     p = vs.add_parser("status"); p.add_argument("case"); p.set_defaults(fn=cmd_review_status)
+    p = vs.add_parser("reopen"); p.add_argument("case"); p.add_argument("--note", required=True)
+    p.add_argument("--reset-rounds", action="store_true"); p.add_argument("--max-rounds", type=int); p.set_defaults(fn=cmd_review_reopen)
 
     p = sp.add_parser("findings"); p.add_argument("case"); p.add_argument("--all", action="store_true"); p.set_defaults(fn=cmd_findings)
     f = sp.add_parser("finding"); fs = f.add_subparsers(dest="sub", required=True)

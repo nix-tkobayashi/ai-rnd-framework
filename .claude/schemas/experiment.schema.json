@@ -2,76 +2,222 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ai-rnd-workspace/schemas/experiment.schema.json",
   "title": "Experiment Manifest",
-  "description": "rnd/<CASE>/experiments/EXP-NNN/manifest.json",
+  "description": "..rnd/cases/cases/<CASE>/experiments/EXP-NNN/manifest.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "id", "caseId", "title", "status", "hypothesis", "environment", "procedure", "expectedResult", "failureCondition", "acceptanceCriteria", "evidence", "created"],
+  "required": [
+    "schemaVersion",
+    "id",
+    "caseId",
+    "title",
+    "status",
+    "hypothesis",
+    "environment",
+    "procedure",
+    "expectedResult",
+    "failureCondition",
+    "acceptanceCriteria",
+    "evidence",
+    "created"
+  ],
   "properties": {
-    "schemaVersion": { "type": "integer", "const": 1 },
-    "id": { "type": "string", "pattern": "^EXP-[0-9]{3}$" },
-    "caseId": { "type": "string", "pattern": "^RND-[0-9]{8}-[0-9]{3}$" },
-    "title": { "type": "string", "minLength": 1 },
-    "status": { "type": "string", "enum": ["planned", "approved", "running", "passed", "failed", "inconclusive", "abandoned"] },
-    "designedBy": { "type": "string" },
-    "approvedBy": { "type": ["string", "null"] },
-    "hypothesis": { "type": "string", "minLength": 1 },
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^EXP-[0-9]{3}$"
+    },
+    "caseId": {
+      "type": "string",
+      "pattern": "^RND-[0-9]{8}-[0-9]{3}$"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "approved",
+        "running",
+        "passed",
+        "failed",
+        "inconclusive",
+        "abandoned"
+      ]
+    },
+    "designedBy": {
+      "type": "string"
+    },
+    "approvedBy": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "hypothesis": {
+      "type": "string",
+      "minLength": 1
+    },
     "environment": {
       "type": "object",
       "additionalProperties": true,
       "properties": {
-        "description": { "type": "string" },
-        "os": { "type": "string" },
-        "runtime": { "type": "string" },
-        "dependencies": { "type": "array", "items": { "type": "string" } },
-        "worktree": { "type": ["string", "null"] },
-        "externalResources": { "type": "array", "items": { "type": "string" } }
+        "description": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        },
+        "runtime": {
+          "type": "string"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "worktree": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "externalResources": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       }
     },
-    "procedure": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
-    "expectedResult": { "type": "string", "minLength": 1 },
-    "failureCondition": { "type": "string", "minLength": 1 },
+    "procedure": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1
+    },
+    "expectedResult": {
+      "type": "string",
+      "minLength": 1
+    },
+    "failureCondition": {
+      "type": "string",
+      "minLength": 1
+    },
     "acceptanceCriteria": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "criterion"],
+        "required": [
+          "id",
+          "criterion"
+        ],
         "properties": {
-          "id": { "type": "string", "pattern": "^AC-[0-9]{2,}$" },
-          "criterion": { "type": "string" },
-          "measurement": { "type": "string" },
-          "result": { "type": ["string", "null"], "enum": ["pass", "fail", "inconclusive", null] }
+          "id": {
+            "type": "string",
+            "pattern": "^AC-[0-9]{2,}$"
+          },
+          "criterion": {
+            "type": "string"
+          },
+          "measurement": {
+            "type": "string"
+          },
+          "result": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "pass",
+              "fail",
+              "inconclusive",
+              null
+            ]
+          }
         }
       }
     },
     "evidence": {
       "type": "array",
       "description": "Evidence produced by the experiment (paths under logs/ or artifacts/, or EV- ids in evidence.json).",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
     "baselineTests": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "before": { "type": "array", "items": { "$ref": "#/$defs/testResult" } },
-        "after": { "type": "array", "items": { "$ref": "#/$defs/testResult" } }
+        "before": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/testResult"
+          }
+        },
+        "after": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/testResult"
+          }
+        }
       }
     },
-    "result": { "type": "string", "description": "Relative path to result.md" },
-    "created": { "type": "string", "format": "date-time" },
-    "startedAt": { "type": ["string", "null"], "format": "date-time" },
-    "finishedAt": { "type": ["string", "null"], "format": "date-time" }
+    "result": {
+      "type": "string",
+      "description": "Relative path to result.md"
+    },
+    "created": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "startedAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    },
+    "finishedAt": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
   },
   "$defs": {
     "testResult": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "status"],
+      "required": [
+        "name",
+        "status"
+      ],
       "properties": {
-        "name": { "type": "string" },
-        "status": { "type": "string", "enum": ["PASS", "FAIL", "SKIP", "ERROR"] },
-        "note": { "type": "string" }
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "PASS",
+            "FAIL",
+            "SKIP",
+            "ERROR"
+          ]
+        },
+        "note": {
+          "type": "string"
+        }
       }
     }
   }
