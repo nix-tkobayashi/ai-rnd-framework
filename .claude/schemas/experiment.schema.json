@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ai-rnd-workspace/schemas/experiment.schema.json",
   "title": "Experiment Manifest",
-  "description": "..rnd/cases/cases/<CASE>/experiments/EXP-NNN/manifest.json",
+  "description": ".rnd/cases/<CASE>/experiments/EXP-NNN/manifest.json",
   "type": "object",
   "additionalProperties": false,
   "required": [

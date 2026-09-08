@@ -12,3 +12,4 @@
 10. **Never edit `.rnd/index.json` / `INDEX.md` / `.rnd/knowledge/catalog.json` by hand** - `rnd.py index` regenerates them.
 11. Keep technical facts in the case, not in agent memory. Agents define *how to work*, cases hold *what is true now*.
 \n12. **Output language follows the case** (`case.json → language`, detected from the question, `--lang` to override). Sources are read in their own language; reports, synthesis, decision, plans and Codex finding texts are written in the case language; quotes, code, commands, identifiers and enum values are never translated.\n
+13. **The Bash filter is advisory.** It blocks recognisable risky commands but is not a sandbox or an authorisation boundary; it can miss destructive commands and refuse harmless ones. Tool-call writes are the boundary that holds.

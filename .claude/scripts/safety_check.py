@@ -90,12 +90,6 @@ def split_heredocs(cmd: str) -> tuple[str, list[str]]:
     return stripped, [b for b in live if b.strip()]
 
 
-def strip_heredocs(cmd: str) -> str:
-    """Backwards-compatible helper: the command with inert heredoc bodies removed."""
-    stripped, live = split_heredocs(cmd)
-    return stripped + ("\n" + "\n".join(live) if live else "")
-
-
 def normalise_text(text: str) -> str:
     """Join line continuations and drop comments, leaving quoting intact. Used for the
     destructive-command patterns, which must see real command text and not the inside of a
@@ -318,14 +312,22 @@ def _under_tmpdir(abs_path: str) -> bool:
 
 
 def _match_prefix_or_glob(rel_path: str, pattern: str) -> bool:
-    if "*" in pattern or "?" in pattern:
-        # directory globs: '.rnd/cases/RND-*/artifacts/' matches anything below
-        if pattern.endswith("/"):
-            return fnmatch.fnmatchcase(rel_path, pattern + "*") or fnmatch.fnmatchcase(rel_path.rstrip("/") + "/", pattern)
-        return fnmatch.fnmatchcase(rel_path, pattern)
-    if pattern.endswith("/"):
-        return rel_path == pattern.rstrip("/") or rel_path.startswith(pattern)
-    return rel_path == pattern
+    """Match a path against a policy pattern component by component, so a `*` never crosses a
+    path separator. Without this, the artifacts exception `.rnd/cases/RND-*/artifacts/` would
+    also admit `.rnd/cases/<CASE>/research/artifacts/`, which is protected."""
+    pat_parts = [x for x in pattern.strip("/").split("/") if x]
+    path_parts = [x for x in rel_path.strip("/").split("/") if x]
+    if not pat_parts or not path_parts:
+        return False
+    if pattern.endswith("/"):                        # directory prefix: match the leading parts
+        if len(path_parts) < len(pat_parts):
+            return False
+        candidate = path_parts[:len(pat_parts)]
+    else:                                            # exact path
+        if len(path_parts) != len(pat_parts):
+            return False
+        candidate = path_parts
+    return all(fnmatch.fnmatchcase(c, q) for c, q in zip(candidate, pat_parts))
 
 
 # --------------------------------------------------------------------------- #
@@ -390,24 +392,16 @@ def check_command(command: str, agent: str | None = None, policy: dict | None = 
 
     agent = (agent or "").lower()
     if agent in BUILDER_AGENTS:
+        git_ok = agent in policy["protectedPaths"].get("gitWriteAgents", [])
         for token in write_targets(cmd, cwd):
+            if token == ".git/" and git_ok:
+                continue                             # commits in its own worktree are its job
             ok, why = check_path_write(token, agent, policy, cwd)
             if not ok:
                 return False, (f"builder shell write to protected path '{token}': {why}. "
                                f"Relative paths are read as workspace paths; use an absolute path "
                                f"for scratch files outside it.")
     return True, "ok"
-
-
-def _path_tokens(cmd: str) -> list[str]:
-    toks = []
-    for t in re.split(r"[\s;|&()<>'\"`]+", cmd):
-        t = t.strip()
-        if not t or t.startswith("-"):
-            continue
-        if "/" in t or t in {".claude", ".codex", "scripts", "schemas", "rnd", "knowledge", "CLAUDE.md", "SPEC.md", ".gitignore"}:
-            toks.append(t.rstrip("/") + ("/" if t.endswith("/") else ""))
-    return toks
 
 
 _QUOTED_RE = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")

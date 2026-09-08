@@ -566,6 +566,42 @@ def test_validator_inline_python_receivers(ws: Path, cmd: str, expected: int) ->
     assert hook(ws, "reviewer-shell-guard.py", payload).returncode == expected, cmd
 
 
+@pytest.mark.parametrize("path,agent,expected", [
+    # a `*` in a protected-path pattern must not cross a path separator
+    (".rnd/cases/RND-20260101-001-x/research/artifacts/x.md", "builder", 2),
+    (".rnd/cases/RND-20260101-001-x/research/experiments/EXP-001/logs/x", "builder", 2),
+    (".rnd/cases/RND-20260101-001-x/validation/artifacts/x", "builder", 2),
+    (".rnd/cases/RND-20260101-001-x/artifacts/poc.py", "builder", 0),
+    (".rnd/cases/RND-20260101-001-x/experiments/EXP-001/logs/run.log", "builder", 0),
+])
+def test_artifacts_exception_does_not_cross_directories(ws: Path, path: str, agent: str, expected: int) -> None:
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(ws / path)}, "agent_type": agent, "cwd": str(ws)}
+    assert hook(ws, "builder-write-guard.py", payload).returncode == expected, path
+
+
+@pytest.mark.parametrize("cmd,agent,expected", [
+    # only the isolated builder commits, and only because it works in its own worktree
+    (GIT + " add -A", "isolated-builder", 0),
+    (GIT + ' commit -m "alternative A"', "isolated-builder", 0),
+    (GIT + " add -A", "builder", 2),
+    (GIT + " commit -m x", "builder", 2),
+])
+def test_only_isolated_builder_may_commit(ws: Path, cmd: str, agent: str, expected: int) -> None:
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "agent_type": agent, "cwd": str(ws)}
+    assert hook(ws, "safety-gate.py", payload).returncode == expected, cmd
+
+
+def test_permission_deny_rules_do_not_bind_the_lead(ws: Path) -> None:
+    """The Lead edits case metadata through the knowledge-promotion workflow; a settings deny
+    would also apply to it, so tool-level confinement stays in the hook, which knows the role."""
+    deny = json.loads((ws / ".claude" / "settings.json").read_text())["permissions"]["deny"]
+    assert not [d for d in deny if d.startswith(("Write(", "Edit("))], deny
+    lead = {"tool_name": "Edit", "tool_input": {"file_path": str(ws / ".rnd/cases/RND-1/case.json")}, "cwd": str(ws)}
+    assert hook(ws, "builder-write-guard.py", lead).returncode == 0
+    builder = {**lead, "agent_type": "builder"}
+    assert hook(ws, "builder-write-guard.py", builder).returncode == 2
+
+
 def test_decide_enforces_completion_criteria(ws: Path) -> None:
     cid = new_case(ws)
     r = run(ws, "rnd.py", "decide", cid, "--outcome", "adopt", "--summary", "go", check=False)

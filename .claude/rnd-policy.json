@@ -78,7 +78,7 @@
     "caseInactiveDays": 90
   },
   "protectedPaths": {
-    "description": "Paths that R&D agents (Builder, Validator, Reviewer) must never modify. Only the Lead (main session) writes here, through .claude/scripts/rnd.py. Builders may also write under /tmp, /var/tmp, $TMPDIR (scratch files).",
+    "description": "Paths that R&D agents (Builder, Validator, Reviewer) must never modify. Only the Lead (main session) writes here, through .claude/scripts/rnd.py. Builders may also write under /tmp, /var/tmp, $TMPDIR (scratch files). `gitWriteAgents` lists the agents allowed to commit - only isolated-builder, which works in its own temporary worktree.",
     "builderDenied": [
       ".claude/",
       ".codex/",
@@ -105,6 +105,9 @@
     ],
     "testOnlyAgents": [
       "validator"
+    ],
+    "gitWriteAgents": [
+      "isolated-builder"
     ]
   },
   "safety": {

@@ -22,17 +22,7 @@
       "Bash(sudo:*)",
       "Read(~/.ssh/**)",
       "Read(~/.aws/**)",
-      "Read(~/.codex/auth.json)",
-      "Write(.claude/**)",
-      "Edit(.claude/**)",
-      "Write(.codex/**)",
-      "Edit(.codex/**)",
-      "Write(.rnd/cases/*/case.json)",
-      "Edit(.rnd/cases/*/case.json)",
-      "Write(.rnd/cases/*/reviews/**)",
-      "Edit(.rnd/cases/*/reviews/**)",
-      "Write(.rnd/knowledge/shared/**)",
-      "Edit(.rnd/knowledge/shared/**)"
+      "Read(~/.codex/auth.json)"
     ]
   },
   "hooks": {

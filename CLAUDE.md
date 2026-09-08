@@ -33,7 +33,7 @@ Then invoke the `rnd-orchestrator` skill (`/rnd-orchestrator <question>`) to run
 | codex-reviewer | wrapper → `codex exec` (read-only sandbox) → findings.json | review round files only (via script) |
 | validator | behaviour, acceptance criteria, reproducibility | no (tests only) |
 
-Read-only agents return their report as the final message; the Lead stores it (`rnd.py research add --file` for research/critic reports, `rnd.py report add --file` for builder/validator reports). Builders may write only `.rnd/cases/<CASE>/artifacts/`, `experiments/EXP-*/logs/` and `/tmp`. Hooks enforce the boundaries: `safety-gate.py` (all Bash), `builder-write-guard.py` (protected paths), `reviewer-shell-guard.py` (read/test-only shells).
+Read-only agents return their report as the final message; the Lead stores it (`rnd.py research add --file` for research/critic reports, `rnd.py report add --file` for builder/validator reports). Builders may write only `.rnd/cases/<CASE>/artifacts/`, `experiments/EXP-*/logs/` and `/tmp`. `builder-write-guard.py` is the write boundary for tool calls (Write/Edit/MultiEdit/NotebookEdit). `safety-gate.py` and `reviewer-shell-guard.py` filter Bash commands, but they are advisory: they reject recognisable risky commands and can both miss destructive ones and refuse harmless ones.
 
 ## Non-negotiables
 1. Researcher ≠ Critic. Builder ≠ Reviewer ≠ Validator.
@@ -66,5 +66,5 @@ Read-only agents return their report as the final message; the Lead stores it (`
 - Codex CLI: never pin `-m`; the wrapper adds `--skip-git-repo-check -s read-only --output-schema` and a `timeout`. On timeout do not retry the identical prompt.
 - Python 3.10+ only, no third-party dependencies (`jsonschema` is optional).
 - Fix rounds in the Codex loop run required tests only; the Validator re-measures experiments after convergence. Keep agent reports within the word caps in their definitions.
-- The Bash safety gate tokenises with `shlex`, ignores heredoc *data* (`cat > file <<EOF`) and scans bodies fed to interpreters. It reads relative paths as workspace paths and does not model `cd`; use absolute paths for scratch files outside the workspace. It is best effort - the enforced write boundary is the tool-level guard plus `permissions.deny`.
+- The Bash filter tokenises with `shlex`, ignores heredoc *data* and reads relative paths as workspace paths (it does not model `cd`), so use absolute paths for scratch files outside the workspace. It is advisory, not a boundary: see README for its known misses and false positives.
 - Local notes go in `CLAUDE.local.md` (git-ignored).

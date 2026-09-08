@@ -102,6 +102,33 @@ layer was therefore rebuilt around `shlex` tokenisation with a narrower, honest 
 - README now states what each of the three layers guarantees instead of implying the hooks are a
   sandbox.
 
+### Fixed - fifth review round
+- `_match_prefix_or_glob` matches path components, so a `*` in a protected-path pattern no longer
+  crosses a separator. The artifacts exception `.rnd/cases/RND-*/artifacts/` had also been admitting
+  `.rnd/cases/<CASE>/research/artifacts/`, a hole in the tool-level write boundary.
+- The `permissions.deny` rules added in the previous round were removed. They also bound the Lead,
+  which broke the documented knowledge-promotion workflow (the Lead edits case metadata). Tool-call
+  confinement belongs in the hook, which knows which role is acting.
+- `isolated-builder` may write `.git/`, so it can commit inside its own temporary worktree as its
+  agent definition instructs. The plain `builder` still cannot.
+- Dead helpers removed; leftover `.rnd/cases/cases/` in the schema descriptions corrected.
+
+### Changed - the Bash filter is advisory, and says so
+The destructive-command blocklist is no longer presented as a guarantee. It cannot be one: a command
+built inside an interpreter (`bash -c "..."`) is not analysed as shell, and uncommon spellings of
+destructive git commands get through. Rather than keep patching a text model of shell semantics, the
+layer is now described for what it is, in README.md, CLAUDE.md, the agent definitions and the rules:
+
+> The Bash hook rejects some recognisable risky commands to reduce accidental mistakes. It does not
+> determine whether a shell command is safe, and it can both miss destructive commands and reject
+> harmless ones. It is not a sandbox or an authorisation boundary.
+
+The README now lists the known misses and false positives (`rg touch <dir>`, `cp a /tmp/b`,
+`git worktree list`, relative paths read as workspace paths) so an unexpected denial is
+recognisable, and points at containers, VMs or the Claude Code permission settings for anyone who
+needs a hard boundary around shell execution. The two mechanisms that do hold - Codex's read-only
+sandbox and the tool-level write guard - are named separately.
+
 ### Changed
 - README says plainly what the hooks are: defence in depth, not a sandbox. Codex's `-s read-only`
   is the one real sandbox in the loop.

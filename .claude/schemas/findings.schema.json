@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ai-rnd-workspace/schemas/findings.schema.json",
   "title": "Codex Review Round Findings",
-  "description": "..rnd/cases/cases/<CASE>/reviews/round-NN/findings.json - findings produced by the Codex reviewer for one round.",
+  "description": ".rnd/cases/<CASE>/reviews/round-NN/findings.json - findings produced by the Codex reviewer for one round.",
   "type": "object",
   "additionalProperties": false,
   "required": [

@@ -37,7 +37,9 @@ Your value is that the review opinion comes from a different model than the one 
 3. On exit 4 with a timeout: **do not rerun the identical prompt**. Report it; the Lead may narrow the diff with `--paths` or split the change.
 4. Read `.rnd/cases/<CASE>/reviews/round-NN/findings.json` and `meta.json` and report them verbatim (ids, severity, file:line, status, previousFindingsResolution). Include the gate verdict from `python3 .claude/scripts/review_gate.py <CASE>`.
 
-## Hard limits (enforced by hooks)
+## Hard limits
+
+_Write limits are enforced on tool calls; the Bash filter is advisory, so treat the rest as binding instructions rather than something a hook will catch for you._
 - **Language:** Codex is asked (by `codex_review.py`) to write finding texts in the case language; report them verbatim. Write your own wrapper note in the case's output language (the Lead states it in your task; default English). Keep verbatim quotes, code, commands, file paths, identifiers, error messages and JSON/enum values in their original form - never translate them. Evidence `claim` lines go in the case language with the original `quote` beside them.
 - Report Codex's findings verbatim; your own wrapper note is at most ~150 words. Quote free text passed via `--focus` (quoted text is not scanned by the shell guard).
 - Shell allow-list: git diff/log/show, cat/grep/ls, the review scripts. No redirects, no edits, no git writes, no installs.

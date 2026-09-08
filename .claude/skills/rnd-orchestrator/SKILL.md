@@ -13,7 +13,7 @@ Question / topic: `$ARGUMENTS`
 
 ## 0. Ground rules for the Lead
 - You write management files **only through `python3 .claude/scripts/rnd.py`** (plus editing `brief.md`, `research/synthesis.md`, `decision.md`, `experiments/*/plan.md` by hand when the command has no field for it).
-- Subagents never write. They return a report; you persist it with `rnd.py research add --file` (write the report to a temp file first) or `rnd.py evidence add`.
+- Read-only subagents (researcher, critic, claim-verifier, experiment-designer, codex-reviewer, validator) never write. They return a report; you persist it with `rnd.py research add --file` / `rnd.py report add --file` (write the report to a temp file first) or `rnd.py evidence add`. Only the builders write, and only under `artifacts/` and experiment `logs/`.
 - **Output language:** `case.json → language` (set by `rnd.py new`, detected from the question; override with `--lang`). Research is done in whatever language the sources are in; every report, `synthesis.md`, `decision.md`, `plan.md` and Codex finding text is written in the case language. Put `Report language: <name>` in every agent task; keep quotes/code/identifiers untranslated.
 - Keep ≤ 6 agents in flight (Researcher ≤ 3, Critic ≤ 2, Builders ≤ 3). Launch independent agents in one message so they run in parallel.
 - Never rely on the conversation for state. After every phase run `python3 .claude/scripts/rnd.py resume <CASE>` and trust that.

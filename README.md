@@ -43,7 +43,7 @@ cd my-rnd-workspace && rm -rf .git && git init -b main
 
 # 2. check the engine on your machine
 python3 .claude/scripts/rnd.py doctor        # tooling, hooks, schemas, policy
-python3 -m pytest .claude/tests -q           # 183 engine tests
+python3 -m pytest .claude/tests -q           # 193 engine tests
 
 # 3. start working - your cases are committed with the engine from here on
 python3 .claude/scripts/rnd.py new "<title>" --question "<your question>"
@@ -74,24 +74,30 @@ User question → R&D Lead → existing-case search → resume | create
 
 ### What the guardrails do and do not do
 
-Three layers, with different strengths. Being precise about them matters more than the label
-"secure":
+Three mechanisms, with very different strengths. Being precise about them matters more than the
+word "secure":
 
-| Layer | What it is | What it guarantees |
-|-------|-----------|--------------------|
+| Mechanism | What it is | What it actually gives you |
+|-----------|-----------|----------------------------|
 | Codex sandbox | `codex exec -s read-only` | A real sandbox. The reviewer cannot write, whatever it decides to do. |
-| Tool-level write guard | `builder-write-guard` hook on Write/Edit/MultiEdit/NotebookEdit, plus `permissions.deny` in `.claude/settings.json` | Reliable. The path arrives as a structured argument, so there is nothing to parse and nothing to evade. This is the write boundary. |
-| Bash command gate | `safety-gate` and `reviewer-shell-guard` hooks | Best effort. It tokenises with `shlex` and blocks destructive commands and obvious writes to protected paths, but a shell command that is determined to write somewhere can. |
+| Tool-level write guard | the `builder-write-guard` hook on Write / Edit / MultiEdit / NotebookEdit | The write boundary for agent *tool* calls. The path arrives as a structured argument, so there is no shell text to interpret. |
+| Bash command filter | the `safety-gate` and `reviewer-shell-guard` hooks | **Advisory.** It rejects some recognisable risky commands to reduce accidental damage. It does not decide whether a shell command is safe. |
 
-The practical rule for the Bash gate: **relative paths are read as workspace paths.** It does not
-model `cd`, because four review rounds showed that guessing which `cd` won produces both false
-denials and bypasses. Use an absolute path (`/tmp/...`) for scratch files outside the workspace,
-and prefer the Write tool over shell redirection for files inside it.
+The Bash filter is deliberately not a guarantee. It tokenises with `shlex` and blocks what it
+recognises, but it **can miss destructive commands and can reject harmless ones**. It is not a
+sandbox and not an authorisation boundary. Known limits, so an unexpected denial is recognisable:
 
-So: run this framework on a repository you are willing to let an agent modify, and keep the Claude
-Code permission settings as the outer boundary. The value of the role separation is that the
-*reviewer* and the *validator* are genuinely independent of the builder, not that the builder is
-imprisoned.
+- **Misses.** A command built inside an interpreter (`bash -c "..."`, `python3 -c "os.system(...)"`)
+  is not analysed as shell. Uncommon spellings of destructive git commands get through
+  (`git push origin +HEAD:main`, `git reset HEAD --hard`).
+- **False positives.** A protected path or a write verb appearing as an *argument* can trip it:
+  `rg touch .claude/scripts`, `cp README.md /tmp/copy`, `git worktree list`. Relative paths are read
+  as workspace paths, so use an absolute path (`/tmp/...`) for scratch files outside the workspace.
+
+If you need a hard boundary around shell execution, put one outside this framework: run it in a
+container or a VM, or use the Claude Code permission settings, which you own. The value of the role
+separation here is that the *reviewer* and the *validator* are genuinely independent of the builder,
+not that the builder is imprisoned.
 
 ## Key guarantees
 | Principle | Enforced by |
@@ -100,7 +106,7 @@ imprisoned.
 | Claude-written code is reviewed by Codex; Claude cannot close a finding; every fix goes back to Codex | `.claude/scripts/codex_review.py`, `rnd.py finding set` (Claude may only set `fixed_pending_review` / `disputed`) |
 | Convergence rules (0 actionable findings + tests PASS; 2× CLEAN for high risk; maxRounds 5; no forced PASS) | `.claude/scripts/review_gate.py`, `.claude/rnd-policy.json` |
 | Oscillation (same finding re-opened) escalates to the Lead | fingerprints + `reopenCount` in `findings.json` |
-| Codex runs read-only; agent roles have write boundaries enforced on the common paths | Codex `-s read-only` (a real sandbox) plus `.claude/hooks/*.py` PreToolUse hooks (defence in depth, not a sandbox - see below) |
+| Codex runs read-only; agent tool writes are confined to each role's paths | Codex `-s read-only` (a real sandbox) and the tool-level write guard. The Bash filter is advisory - see above |
 | Case files are the single source of truth, resumable from any session | `.rnd/cases/<CASE>/case.json`, `rnd.py resume`, `handoff.md` |
 | Evidence carries provenance and freshness; stale evidence is flagged | `.claude/schemas/evidence.schema.json`, `rnd.py evidence check` |
 | Knowledge is promoted deliberately, never automatically | `.rnd/knowledge/candidates/` → review → `.rnd/knowledge/shared/` |
