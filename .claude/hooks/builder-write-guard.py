@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """PreToolUse hook (matcher: Write|Edit|MultiEdit|NotebookEdit) for Builder agents.
 
-Denies writes to R&D infrastructure (.claude/, .codex/, scripts/, schemas/,
-rnd/, knowledge/ ...) so the implementation agent cannot rewrite the rules or
-the Single Source of Truth. Allowed exceptions (PoC code / logs) are listed in
-.claude/rnd-policy.json -> protectedPaths.builderAllowedWithinDenied.
+Builders may write only case output (PoC code / logs, listed in
+.claude/rnd-policy.json -> protectedPaths.builderAllowed) or a temporary
+directory. Everything else - the engine, the Single Source of Truth and, when
+the engine is embedded in a product repository, that repository's own code -
+is denied.
 
 Also used for read-only agents: any write attempt is denied.
 """

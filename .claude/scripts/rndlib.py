@@ -42,9 +42,9 @@ def find_root(start: Path | None = None) -> Path:
 ROOT = find_root()
 POLICY_PATH = ROOT / ".claude" / "rnd-policy.json"
 
-# Where the engine and the R&D data live. Everything except the uppercase
-# top-level documents is hidden in dot-directories; change `layout` in
-# .claude/rnd-policy.json rather than these defaults.
+# Where the engine and the R&D data live. Both are dot-directories so the engine
+# can sit inside any repository next to that repository's own files; change
+# `layout` in .claude/rnd-policy.json rather than these defaults.
 DEFAULT_LAYOUT = {
     "engineDir": ".claude",
     "scriptsDir": ".claude/scripts",
@@ -75,7 +75,22 @@ RND_ROOT = ROOT / LAYOUT["dataDir"]
 RND_DIR = ROOT / LAYOUT["casesDir"]
 KNOWLEDGE_DIR = ROOT / LAYOUT["knowledgeDir"]
 
-VERSION_FILE = ROOT / "VERSION"
+VERSION_FILE = ENGINE_DIR / "VERSION"
+
+# Files the engine generates on demand; a host repository should git-ignore them.
+GENERATED_FILES = [f"{LAYOUT['dataDir']}/index.json", f"{LAYOUT['dataDir']}/INDEX.md", f"{LAYOUT['knowledgeDir']}/catalog.json"]
+# What `rnd.py install` adds to a host's .gitignore: the generated files plus the Python caches
+# the hooks and the engine tests leave under the engine directory.
+HOST_IGNORE_LINES = GENERATED_FILES + [f"{LAYOUT['engineDir']}/**/__pycache__/", f"{LAYOUT['engineDir']}/.pytest_cache/"]
+# Sample paths `rnd_doctor.py` asks git about to see that those lines are in effect.
+HOST_IGNORE_PROBES = GENERATED_FILES + [f"{LAYOUT['scriptsDir']}/__pycache__/rndlib.cpython-312.pyc", f"{LAYOUT['engineDir']}/.pytest_cache/v/cache/nodeids"]
+# Not part of the engine even when present in a source checkout.
+ENGINE_CACHE_PATTERNS = ("__pycache__", "*.py[cod]", ".pytest_cache")
+
+# Everything `rnd.py install` copies into a host repository, relative to the engine
+# directory. `settings.json` is merged, not copied, so it is listed separately.
+ENGINE_ITEMS = ["VERSION", "rnd-policy.json", "pytest.ini", "agents", "skills", "hooks", "rules", "scripts", "schemas", "tests"]
+ENGINE_SETTINGS = "settings.json"
 
 
 def engine_version() -> str:

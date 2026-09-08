@@ -1,15 +1,16 @@
 # Claude Code + Codex Multi-Agent R&D Workspace 詳細設計書
 
-**Version:** 1.1
-**対象Repository:** `ai-rnd-workspace`
-**Repository構成:** 単一Repository
+**Version:** 1.2
+**配布Repository:** `ai-rnd-framework`（R&D Engine の配布元）
+**対象Repository:** Engine を `.claude/` に持つ任意の Git Repository（専用の `ai-rnd-workspace`、または既存の製品・サービス・インフラ Repository）
+**Repository構成:** Workspace 1 つにつき単一Repository
 **用途:** 汎用IT R&D Workspace
 
 ---
 
 # 1. 目的
 
-本システムは、単一のGit Repository `ai-rnd-workspace` を常設のR&D Workspaceとして使用し、IT分野における様々なテーマを継続的に調査・検証・実装・評価するための基盤とする。
+本システムは、単一のGit RepositoryをR&D Workspaceとして使用し、IT分野における様々なテーマを継続的に調査・検証・実装・評価するための基盤とする。Workspaceとは **R&D Engine（`.claude/`）とR&Dデータ（`.rnd/`）を持つGit Repository** であり、専用に用意した `ai-rnd-workspace` でも、既存の製品・サービス・インフラのRepositoryでもよい。
 
 対象テーマは固定しない。
 
@@ -52,11 +53,13 @@ ai-rnd-workspace
 
 本設計では以下を明確に区別する。
 
-## Repository / Workspace
+## Framework / Workspace
 
-`ai-rnd-workspace` はR&Dを行うための共通実行環境である。
+`ai-rnd-framework` はR&D Engineの配布元Repositoryである。Engineは `.claude/` に閉じており、`rnd.py install` で任意のRepositoryへコピーされる。
 
-以下を保持する。
+WorkspaceはEngineを持つRepositoryであり、R&Dを行うための実行環境である。専用Repository（`ai-rnd-workspace`）として使う場合も、既存のRepositoryへ埋め込む場合も、Workspaceとしての構成と規則は同じである。
+
+Workspaceは以下を保持する。
 
 * Claude Code Agent
 * Skill
@@ -111,20 +114,23 @@ R&D Caseを分ける
 
 # 3. Repository方針
 
-本システムでは原則としてRepositoryは1つのみ使用する。
+Repositoryは2種類に分かれる。
 
 ```text
-ai-rnd-workspace
+ai-rnd-framework   Engineの配布元。R&Dデータを持たない。
+<workspace>        Engineを持つRepository。R&Dデータ（Case・Knowledge）はここに蓄積する。
 ```
 
-以下のような基盤Repositoryと実行Repositoryの分離は行わない。
+Workspaceは以下のどちらでもよい。
 
 ```text
-ai-rnd-framework
-ai-rnd-lab
+専用Workspace   ai-rnd-framework のクローンをそのまま使う（旧来の ai-rnd-workspace）
+埋め込み        既存の製品・サービス・インフラ Repository に rnd.py install で Engine を入れる
 ```
 
-また、
+埋め込みの場合、EngineはそのRepositoryの `.claude/` と `.rnd/` にのみ存在し、Repository自身の `README.md`・`CLAUDE.md`・コードには触れない。Engineの運用マニュアルはEngine内（`.claude/rules/`）にあり、Repository固有の `CLAUDE.md` と共存する。
+
+Workspaceの中では、
 
 ```text
 aws-rnd
@@ -132,9 +138,7 @@ gpu-rnd
 llm-rnd
 ```
 
-のようなテーマ別Repositoryも作成しない。
-
-R&D基盤とR&D成果を同一Repositoryで管理する。
+のようなテーマ別Repositoryは作成しない。1つのWorkspaceのR&D成果は、そのWorkspaceの1Repositoryで管理する。
 
 ---
 
@@ -201,18 +205,19 @@ Future R&Dから再利用
 
 # 6. Repository構成
 
+Workspace（任意のRepository）の構成:
+
 ```text
-ai-rnd-workspace/
+<workspace>/
 │
-├── README.md
-├── CLAUDE.md
-├── CLAUDE.local.md
+├── (Repository自身のファイル: README.md, CLAUDE.md, コード ... Engineは触れない)
+├── .gitignore            (生成物 3 ファイルの除外行を rnd.py install が追加)
 │
-├── .gitignore
-│
-├── .claude/
-│   ├── settings.json
+├── .claude/              R&D Engine
+│   ├── VERSION
+│   ├── settings.json     (既存があればマージ)
 │   ├── rnd-policy.json
+│   ├── pytest.ini
 │   │
 │   ├── agents/
 │   │   ├── researcher.md
@@ -239,44 +244,49 @@ ai-rnd-workspace/
 │   │   ├── builder-write-guard.py
 │   │   └── reviewer-shell-guard.py
 │   │
-│   └── rules/
-│       ├── rnd.md
-│       └── review.md
+│   ├── rules/
+│   │   ├── rnd.md
+│   │   ├── review.md
+│   │   └── rnd-manual.md
+│   │
+│   ├── scripts/
+│   │   ├── rnd.py
+│   │   ├── rnd_doctor.py
+│   │   ├── codex_review.py
+│   │   ├── review_gate.py
+│   │   ├── safety_check.py
+│   │   ├── generate_index.py
+│   │   └── rndlib.py
+│   │
+│   ├── schemas/
+│   │   ├── case.schema.json
+│   │   ├── evidence.schema.json
+│   │   ├── findings.schema.json
+│   │   ├── experiment.schema.json
+│   │   └── codex-review-output.schema.json
+│   │
+│   └── tests/
 │
-├── .codex/
-│   └── config.toml
-│
-├── scripts/
-│   ├── rnd.py
-│   ├── rnd_doctor.py
-│   ├── codex_review.py
-│   ├── review_gate.py
-│   ├── safety_check.py
-│   └── generate_index.py
-│
-├── schemas/
-│   ├── case.schema.json
-│   ├── evidence.schema.json
-│   ├── findings.schema.json
-│   └── experiment.schema.json
-│
-├── knowledge/
-│   ├── shared/
-│   ├── candidates/
-│   └── catalog.json
-│
-└── rnd/
-    ├── index.json
-    ├── INDEX.md
+└── .rnd/                 R&D データ
+    ├── index.json        (生成物)
+    ├── INDEX.md          (生成物)
     │
-    ├── RND-20260907-001-topic-a/
-    ├── RND-20260907-002-topic-b/
-    └── ...
+    ├── knowledge/
+    │   ├── shared/
+    │   ├── candidates/
+    │   └── catalog.json  (生成物)
+    │
+    └── cases/
+        ├── RND-20260907-001-topic-a/
+        ├── RND-20260907-002-topic-b/
+        └── ...
 ```
 
-`.claude/` や `scripts/` は基盤であるが、別Repositoryからコピーするものではない。
+配布Repository `ai-rnd-framework` は上記に加えて `README.md`・`SPEC.md`・`CLAUDE.md`・`CHANGELOG.md`・`LICENSE`・`.codex/config.toml` を持つ。これらはFramework自身の文書・設定であり、Workspaceへはインストールされない。
 
-**このRepository自身の正式な構成要素としてGit管理する。**
+`.claude/` は配布元からコピーされるが、コピーされた時点でそのWorkspaceの正式な構成要素である。
+
+**Engine（`.claude/`）とR&Dデータ（`.rnd/`）はWorkspaceのRepositoryでGit管理する。** Engineの更新は `rnd.py install --upgrade` で配布元から取り込む。
 
 ---
 
@@ -984,17 +994,11 @@ Agentには主として、
 
 # 33. Git管理対象
 
-以下は同じ `ai-rnd-workspace` RepositoryでGit管理する。
+以下はWorkspaceの同じRepositoryでGit管理する。
 
 ```text
-CLAUDE.md
-.claude/
-.codex/
-scripts/
-schemas/
-knowledge/
-rnd/
-README.md
+.claude/      R&D Engine
+.rnd/         R&D History + R&D Knowledge
 ```
 
 つまり、
@@ -1007,7 +1011,7 @@ R&D History
 R&D Knowledge
 ```
 
-のすべてを1Repositoryで管理する。
+のすべてを1Repositoryで管理する。生成物（`.rnd/index.json`・`.rnd/INDEX.md`・`.rnd/knowledge/catalog.json`）だけは管理対象外とし、`rnd.py doctor` が再生成する。
 
 ---
 
@@ -1017,29 +1021,13 @@ R&D Knowledge
 
 Repository分離を検討するのは、例えば以下の場合のみとする。
 
-* 別の製品Repositoryそのものを変更する必要がある
 * Security Boundaryが異なる
 * 機密レベルが異なる
 * 異なるGit履歴を維持する必要がある
-* ProductionコードRepositoryへ直接適用する必要がある
 
-例えば、
+R&D対象が製品Repositoryそのものである場合、Workspaceを分ける必要はない。Engineをその製品Repositoryへ埋め込み（§3）、Caseをその中で管理してよい。その場合もSecurity Boundaryは保たれる。Builderが書けるのはCase成果物（`protectedPaths.builderAllowed`）だけであり、製品コードはPolicyで明示的に開放しない限り書き込み対象にならない（§37）。
 
-```text
-ai-rnd-workspace
-```
-
-で新技術を検証し、
-
-実製品:
-
-```text
-production-service
-```
-
-へ導入する段階では、製品Repository側で別作業を行う。
-
-これは「話題を分ける」ためではなく、
+専用Workspaceで検証した結果を実製品へ導入する場合は、製品Repository側で別作業を行う。これは「話題を分ける」ためではなく、
 
 ```text
 コードベースとSecurity Boundaryを分ける
@@ -1135,21 +1123,27 @@ Read / Test only
 Builder:
 
 ```text
-Source Write allowed
+Case成果物のみ Write allowed
 ```
 
-ただしBuilderには以下を変更させない。
+Builderが書けるのは `.claude/rnd-policy.json` → `protectedPaths.builderAllowed` に列挙されたパスと一時ディレクトリだけである。既定では、
 
 ```text
-.claude/
-.codex/
-scripts/
-schemas/
-rnd/
-knowledge/
+.rnd/cases/<CASE>/artifacts/
+.rnd/cases/<CASE>/experiments/EXP-*/logs/
+/tmp
 ```
 
-つまりR&D実装Agent自身が、R&D基盤のルールを書き換えられないようにする。
+それ以外、すなわち
+
+```text
+.claude/            R&D Engine
+.rnd/knowledge/     Shared Knowledge
+.rnd/cases/<CASE>/  の管理ファイル（case.json, research/, reviews/, validation/ ...）
+Repository自身のコード（Engineを埋め込んだ場合）
+```
+
+は既定で書き込み禁止である。つまりR&D実装Agent自身がR&D基盤のルールを書き換えられず、EngineをホストするRepositoryのコードもCaseの副作用で変更されない。製品コードの一部をBuilderに書かせたい場合は、そのパスを `builderAllowed` に追加して明示的に開放する。
 
 ---
 
@@ -1265,32 +1259,30 @@ Repository分割は検索性能対策としては行わない。
 
 # 42. 最終Repository構成
 
-最終的には以下の1RepositoryのみをR&D Workspaceとして利用する。
+Workspaceは以下の1Repositoryである（専用Repositoryでも、Engineを埋め込んだ既存Repositoryでも同じ）。
 
 ```text
-ai-rnd-workspace/
+<workspace>/
+│
+├── (Repository自身のファイル)
 │
 ├── R&D Engine
-│   ├── .claude/
-│   ├── .codex/
-│   ├── scripts/
-│   └── schemas/
+│   └── .claude/
 │
-├── Shared Knowledge
-│   └── knowledge/
-│
-└── R&D History
-    └── rnd/
-        ├── RND-0001
-        ├── RND-0002
-        ├── RND-0003
-        └── ...
+└── R&D Data
+    └── .rnd/
+        ├── knowledge/      Shared Knowledge
+        └── cases/          R&D History
+            ├── RND-0001
+            ├── RND-0002
+            ├── RND-0003
+            └── ...
 ```
 
 概念的には、
 
 ```text
-          ai-rnd-workspace
+            <workspace>
                  │
        ┌─────────┼─────────┐
        │         │         │
@@ -1344,15 +1336,17 @@ Decision recorded
 
 # 44. Git Repository名
 
-正式Repository名:
+配布Repository名:
 
 ```text
-ai-rnd-workspace
+ai-rnd-framework
 ```
 
 Description:
 
 > Multi-agent AI workspace for technical R&D, experimentation, review convergence, validation, and reusable knowledge.
+
+専用Workspaceを作る場合の推奨名は `ai-rnd-workspace`。既存Repositoryへ埋め込む場合、Repository名は変えない。
 
 ---
 
@@ -1400,7 +1394,7 @@ Linux
 のようにテーマが変化してもWorkspaceは変更しない。
 
 ```text
-ai-rnd-workspace
+<workspace>
        │
        ├── Case A
        ├── Case B

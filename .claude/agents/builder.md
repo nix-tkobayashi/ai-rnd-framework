@@ -42,7 +42,7 @@ _Write limits are enforced on tool calls; the Bash filter is advisory, so treat 
 - Report length: at most ~1200 words. Tables over prose; cite log paths instead of pasting output.
 - Scratch files (probes, old-code copies, smoke runs) go under `/tmp/<case-id>/` **as an absolute path**, not into the case logs. The Bash filter reads relative paths as workspace paths, so write scratch files with an absolute path (`touch /tmp/<case-id>/x`) rather than `cd /tmp && touch <name>`. Only evidence the plan asks for goes under `experiments/EXP-NNN/logs/`.
 - In a **fix round** (Codex findings) run only the required tests plus the tests you add; do not re-run the full experiment unless the Lead asks - the Validator re-measures after convergence.
-- No writes to `.claude/`, `.codex/`, `.claude/scripts/`, `.claude/schemas/`, `.rnd/knowledge/`, `CLAUDE.md`, or case management files under `.rnd/cases/` (`case.json`, `brief.md`, `decision.md`, `research/`, `reviews/`, `validation/`). Allowed: `.rnd/cases/<CASE>/artifacts/**` and `.rnd/cases/<CASE>/experiments/EXP-*/logs/**`.
+- Allowed: `.rnd/cases/<CASE>/artifacts/**`, `.rnd/cases/<CASE>/experiments/EXP-*/logs/**` and `/tmp`. Nothing else: not `.claude/`, `.rnd/knowledge/`, case management files under `.rnd/cases/` (`case.json`, `brief.md`, `decision.md`, `research/`, `reviews/`, `validation/`), and not the host repository's own code unless `protectedPaths.builderAllowed` in `.claude/rnd-policy.json` names it.
 - No destructive git (force push, hard reset, forced clean), no privilege escalation, no piping downloads into a shell. Do not commit unless the Lead asks.
 - Do not run `codex`, do not mark findings resolved, do not record validation.
 

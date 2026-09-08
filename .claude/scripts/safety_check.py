@@ -239,47 +239,86 @@ def _token_write_targets(tokens: list[str]) -> list[str]:
     return out
 
 
+def _statement_tokens(cmd: str) -> list[tuple[list[str], str, str]]:
+    """The command's statements in order as (tokens, operator before, operator after).
+    Physical lines are statement boundaries too (shlex would swallow the newline)."""
+    lines = cmd.replace("\\\n", " ").split("\n")
+    tokens: list[str] = []
+    for i, line in enumerate(lines):
+        if i:
+            tokens.append("\n")
+        tokens.extend(tokenize(line))
+    out, cur, before = [], [], ""
+    for t in tokens:
+        if t in _OPERATORS:
+            if cur:
+                out.append((cur, before, t))
+                cur = []
+            before = t
+        else:
+            cur.append(t)
+    if cur:
+        out.append((cur, before, ""))
+    return out
+
+
 def write_targets(cmd: str, cwd: str | None = None) -> list[str]:
     """Paths a shell command would create, modify or delete.
 
-    Relative paths are resolved against the workspace (or `cwd`), **not** against any `cd`
-    inside the command: modelling shell control flow with text matching does not work, and
-    guessing produced both bypasses and false positives. Use absolute paths for scratch work
-    outside the workspace. This is a best-effort signal, not a write boundary - the enforced
-    boundary is the tool-level guard on Write/Edit and the Claude Code permission settings.
+    Relative paths are resolved against the workspace (or `cwd`). The one piece of shell flow
+    that is modelled is `cd` in command position, walking the statements in order. A `cd` that
+    starts a list and is followed by `&&` moves the directory the following writes are read
+    against for certain. A `cd` that may not have run or may have failed (conditional after
+    `&&` / `||`, or followed by `;` or a newline) makes later relative writes be read against
+    both the new and the old directory, and either must be allowed. A `cd` to an absolute
+    path, to `~`, to `-`, with no argument, or inside a pipeline resets to or keeps the
+    workspace, and a backgrounded list (`&`) undoes the moves made inside it. Redirections on
+    the `cd` statement itself still count. Use absolute paths for scratch work outside the
+    workspace. This is a best-effort signal, not a write boundary - the enforced boundary is
+    the tool-level guard on Write/Edit and the Claude Code permission settings.
     """
     stripped, live_bodies = split_heredocs(cmd)
-    tokens = tokenize(stripped)
-    targets = _token_write_targets(tokens)
+    skip = {"/dev/null", "/dev/stdout", "/dev/stderr", "&1", "&2"}
+    targets: list[str] = []
+    cwds: list[str | None] = [None]                 # candidate directories relative writes are read against
+    list_start = cwds                                # what they were when the current `;`-separated list began
+    for st, before, after in _statement_tokens(stripped):
+        if before in ("", ";", "\n"):
+            list_start = cwds
+        for t in _token_write_targets(st):
+            if not t or t in skip or t.startswith("-"):
+                continue
+            targets.extend(t if os.path.isabs(t) or d is None else os.path.normpath(os.path.join(d, t)) for d in cwds)
+        if after == "&":
+            cwds = list_start                        # the whole list ran in a background subshell
+            continue
+        if st[0].rsplit("/", 1)[-1] not in ("cd", "pushd") or before == "|" or after == "|":
+            continue                                 # not a cd, or one inside a pipeline
+        args, i = [], 1
+        while i < len(st):
+            if _REDIRECT_TOKEN_RE.match(st[i]):
+                i += 2                               # a redirection and its target are not arguments
+                continue
+            if not st[i].startswith("-"):
+                args.append(st[i])
+            i += 1
+        dest = args[0] if args else None
+        if dest is None or os.path.isabs(dest) or dest.startswith("~"):
+            cwds = [None]
+        else:
+            moved = [os.path.normpath(os.path.join(d or "", dest)) for d in cwds]
+            certain = after == "&&" and before in ("", ";", "\n")
+            cwds = moved if certain else list(dict.fromkeys(cwds + moved))
+    extra: list[str] = []
     for body in live_bodies:                        # heredoc bodies keep their own quoting
-        targets += _interp_targets(body)
-        targets += _token_write_targets(tokenize(body))
+        extra += _interp_targets(body)
+        extra += _token_write_targets(tokenize(body))
     subs = _substitutions(stripped)
     if subs:
-        targets += _token_write_targets(tokenize(subs))
-        targets += _interp_targets(subs)
-    # a `cd` into a protected directory makes every relative write in the same command suspect
-    protected_cd = []
-    for i, t in enumerate(tokens):
-        if t not in ("cd", "pushd"):
-            continue
-        j = i + 1
-        while j < len(tokens) and tokens[j].startswith("-") and tokens[j] != "--":
-            j += 1
-        if j < len(tokens) and tokens[j] == "--":
-            j += 1
-        if j < len(tokens) and tokens[j] not in {";", "&&", "||", "|", "&"} and not tokens[j].startswith("-"):
-            protected_cd.append(tokens[j])
-    cleaned: list[str] = []
-    for t in targets:
-        if not t or t in {"/dev/null", "/dev/stdout", "/dev/stderr", "&1", "&2"} or t.startswith("-"):
-            continue
-        cleaned.append(t)
-        if not os.path.isabs(t):
-            for d in protected_cd:
-                if not os.path.isabs(d):
-                    cleaned.append(os.path.normpath(os.path.join(d, t)))
-    return cleaned
+        extra += _token_write_targets(tokenize(subs))
+        extra += _interp_targets(subs)
+    targets += [t for t in extra if t and t not in skip and not t.startswith("-")]
+    return list(dict.fromkeys(targets))
 
 
 def normalize_path(p: str, cwd: str | None = None) -> str:
@@ -354,14 +393,27 @@ def check_path_write(path: str, agent: str | None, policy: dict | None = None, c
             if rel_path.startswith(TEMP_PREFIXES) or _under_tmpdir(rel_path):
                 return True, "temporary directory"
             return False, "builder may only write inside the workspace, its worktree, or a temporary directory (/tmp, $TMPDIR)"
-        for allowed in policy["protectedPaths"]["builderAllowedWithinDenied"]:
+        # Allow-list: the engine may live inside a product repository, so anything that is
+        # not case output is protected by default - the host's own code included.
+        for allowed in policy["protectedPaths"]["builderAllowed"]:
             if _match_prefix_or_glob(rel_path, allowed):
                 return True, f"allowed: {allowed}"
-        for denied in policy["protectedPaths"]["builderDenied"]:
-            if _match_prefix_or_glob(rel_path, denied):
-                return False, (f"builder must not modify R&D infrastructure path '{denied}' "
-                               f"(write PoC code under .rnd/cases/<CASE>/artifacts/ instead; the Lead records results via .claude/scripts/rnd.py)")
+        return False, (f"builder may write only under {', '.join(policy['protectedPaths']['builderAllowed'])} or a temporary directory "
+                       f"(add a path to protectedPaths.builderAllowed in .claude/rnd-policy.json to open it; the Lead records results via .claude/scripts/rnd.py)")
     return True, "ok"
+
+
+def is_protected_path(path: str, policy: dict | None = None, cwd: str | None = None) -> tuple[bool, str]:
+    """Is `path` part of the R&D infrastructure (engine, data, top-level documents)?"""
+    policy = policy or rndlib.load_policy()
+    rel_path = normalize_path(path, cwd)
+    for allowed in policy["protectedPaths"]["builderAllowed"]:
+        if _match_prefix_or_glob(rel_path, allowed):
+            return False, f"case output: {allowed}"
+    for denied in policy["protectedPaths"]["builderDenied"]:
+        if _match_prefix_or_glob(rel_path, denied):
+            return True, f"R&D infrastructure path '{denied}'"
+    return False, "ok"
 
 
 def check_command(command: str, agent: str | None = None, policy: dict | None = None, cwd: str | None = None) -> tuple[bool, str]:
@@ -544,8 +596,8 @@ def scan_diff(ref: str | None, policy: dict | None = None) -> list[str]:
         problems.append(f"secret-like token in added lines: {hit}")
     names = rndlib.git("diff", "--name-only", *( [ref] if ref else [] )).stdout.split()
     for n in names:
-        ok, why = check_path_write(n, "builder", policy)
-        if not ok:
+        protected, why = is_protected_path(n, policy)
+        if protected:
             problems.append(f"protected path changed: {n} ({why})")
     return problems
 

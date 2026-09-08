@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "workspace": "ai-rnd-workspace",
   "layout": {
-    "description": "Where the engine and the R&D data live. Scripts read these; change here, not in code. Only uppercase documents (README.md, SPEC.md, CLAUDE.md, CHANGELOG.md, VERSION) stay at the repository root.",
+    "description": "Where the engine and the R&D data live. Scripts read these; change here, not in code. Both are dot-directories so the engine can be installed into any repository (rnd.py install) without touching that repository's own files.",
     "engineDir": ".claude",
     "scriptsDir": ".claude/scripts",
     "schemasDir": ".claude/schemas",
@@ -78,7 +78,7 @@
     "caseInactiveDays": 90
   },
   "protectedPaths": {
-    "description": "Paths that R&D agents (Builder, Validator, Reviewer) must never modify. Only the Lead (main session) writes here, through .claude/scripts/rnd.py. Builders may also write under /tmp, /var/tmp, $TMPDIR (scratch files). `gitWriteAgents` lists the agents allowed to commit - only isolated-builder, which works in its own temporary worktree.",
+    "description": "Builders may write only under `builderAllowed` (case output) or /tmp, /var/tmp, $TMPDIR; everything else in the repository - the engine, case management files, and the host repository's own code when the engine is embedded - is protected. Add a path to `builderAllowed` to let builders change it. `builderDenied` lists the R&D infrastructure that `safety_check.py diff` flags before a commit. `gitWriteAgents` lists the agents allowed to commit - only isolated-builder, which works in its own temporary worktree.",
     "builderDenied": [
       ".claude/",
       ".codex/",
@@ -92,7 +92,7 @@
       "CHANGELOG.md",
       "VERSION"
     ],
-    "builderAllowedWithinDenied": [
+    "builderAllowed": [
       ".rnd/cases/RND-*/artifacts/",
       ".rnd/cases/RND-*/experiments/EXP-*/logs/"
     ],

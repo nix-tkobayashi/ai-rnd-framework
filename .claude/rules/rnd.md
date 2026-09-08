@@ -1,7 +1,7 @@
 # R&D workspace rules (always loaded)
 
-1. **One repository, many cases.** Never propose a new repo or workspace for a new topic. Different topic = different `.rnd/cases/RND-YYYYMMDD-NNN-<slug>/` case.
-2. **Search before creating.** Every new user request starts with `python3 .claude/scripts/rnd.py search "<topic>"`. Resume an existing case when the topic matches; otherwise `rnd.py new`.
+1. **One repository, many cases.** R&D cases live in this repository's `.rnd/cases/RND-YYYYMMDD-NNN-<slug>/`, whether it is a dedicated workspace or a product repository carrying the engine. Never propose a new repo or workspace for a new topic: different topic = different case.
+2. **Search before creating.** Every R&D request (a question to investigate, an experiment, a PoC) starts with `python3 .claude/scripts/rnd.py search "<topic>"`. Resume an existing case when the topic matches; otherwise `rnd.py new`. Ordinary work on this repository's own code is not a case.
 3. **`case.json` is the truth.** Case state, findings, validation and decision live in files under `.rnd/cases/<CASE>/`. The conversation is not the record. Priority: `case.json` > case artifacts > evidence > `.rnd/knowledge/shared/` > conversation.
 4. **Only the Lead writes management files**, and only via `.claude/scripts/rnd.py`. Subagents return reports as their final message; the Lead persists them (`rnd.py research add --file`).
 5. **Researcher ≠ Critic, Builder ≠ Reviewer, Builder ≠ Validator.** Do not let one agent play two of these roles in a case.

@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-COPY_ITEMS = [".claude", ".codex", "CLAUDE.md", "README.md", ".gitignore", "VERSION", "CHANGELOG.md", "LICENSE"]
+COPY_ITEMS = [".claude"]          # the engine is self-contained; a host repository carries nothing else of ours
+GENERATED = [".rnd/index.json", ".rnd/INDEX.md", ".rnd/knowledge/catalog.json", ".claude/**/__pycache__/", ".claude/.pytest_cache/"]
 
 # split so this file never contains a literal blocked command (the safety gate scans it)
 RM, GIT, TOUCH = "r" + "m", "gi" + "t", "tou" + "ch"
@@ -34,6 +35,7 @@ def ws(tmp_path: Path) -> Path:
             shutil.copy(src, root / item)
     for sub in (".rnd/cases", ".rnd/knowledge/shared", ".rnd/knowledge/candidates"):
         (root / sub).mkdir(parents=True)
+    (root / ".gitignore").write_text("\n".join(GENERATED) + "\n")
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "add", "-A"], cwd=root, check=True)
     subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"], cwd=root, check=True)
@@ -346,6 +348,20 @@ def test_diff_file_list_handles_unusual_filenames(ws: Path) -> None:
     ('echo "$(' + TOUCH + ' .claude/x)"', "builder", 2),
     ("python3 -c \"open('.claude/rnd-policy.json','w').write('{}')\"", "builder", 2),
     ("cd .rnd/cases/RND-20260101-001-x/artifacts && " + TOUCH + " poc.py", "builder", 0),
+    # cd is followed in statement order and only in command position
+    (TOUCH + " .claude/settings.json; cd .rnd/cases/RND-20260101-001-x/artifacts", "builder", 2),
+    ("echo cd .rnd/cases/RND-20260101-001-x/artifacts; " + TOUCH + " main.tf", "builder", 2),
+    ("cd .rnd/cases/RND-20260101-001-x/artifacts | cat; " + TOUCH + " main.tf", "builder", 2),
+    ("cd .rnd/cases/RND-20260101-001-x/artifacts && cd sub && " + TOUCH + " poc.py", "builder", 0),
+    ("cd .rnd/cases/RND-20260101-001-x/artifacts && cd .. && " + TOUCH + " case.json", "builder", 2),
+    ("cd . > main.tf", "builder", 2),                                                              # redirection on the cd itself
+    ("cd .rnd/cases/RND-20260101-001-x/artifacts\n" + TOUCH + " main.tf", "builder", 2),           # newline: the cd may have failed
+    ("cd .rnd/cases/RND-20260101-001-x/artifacts; " + TOUCH + " main.tf", "builder", 2),           # `;` likewise - use && after cd
+    ("printf x | cd .rnd/cases/RND-20260101-001-x/artifacts; " + TOUCH + " main.tf", "builder", 2),  # cd at the end of a pipe
+    ("cd .rnd/cases/RND-20260101-001-x/artifacts & " + TOUCH + " main.tf", "builder", 2),          # backgrounded cd
+    ("false && cd .rnd/cases/RND-20260101-001-x/artifacts && true; " + TOUCH + " main.tf", "builder", 2),   # conditional cd may not run
+    ("cd .rnd/cases/RND-20260101-001-x/artifacts && true & " + TOUCH + " main.tf", "builder", 2),  # backgrounded list
+    ("cd > .rnd/cases/RND-20260101-001-x/artifacts/out && " + TOUCH + " main.tf", "builder", 2),   # redirect target is not the cd argument
     # heredoc bodies: data is data, but an expanded or piped body is a command
     ("cat <<EOF\n$(" + GIT + " reset --hard)\nEOF", "", 2),
     ("cat <<'EOF' | bash\n" + GIT + " reset --hard\nEOF", "", 2),
@@ -387,7 +403,9 @@ def test_reviewer_shell_bypasses_are_closed(ws: Path, cmd: str, agent: str, expe
     # ... while ordinary reads and scratch writes keep working
     ("python3 -c \"print(open('.claude/rnd-policy.json').read())\"", "builder", 0),
     ("python3 -c \"import os; print(os.getcwd())\"", "builder", 0),
-    ("cd /tmp && " + TOUCH + " scratch.txt", "builder", 0),
+    ("cd /tmp && " + TOUCH + " scratch.txt", "builder", 2),      # relative = workspace path; use /tmp/scratch.txt
+    ("cd /tmp && " + TOUCH + " /tmp/scratch.txt", "builder", 0),
+    (TOUCH + " main.tf", "builder", 2),                           # a host repository's own code is not case output
     ("cat > notes.md <<'EOF'\ninert: \\$(" + GIT + " reset --hard)\nEOF", "", 0),
 ])
 def test_safety_gate_round2(ws: Path, cmd: str, agent: str, expected: int) -> None:
@@ -461,7 +479,7 @@ def test_review_reopen_never_reuses_round_numbers(ws: Path) -> None:
     # this errs towards denying, and absolute paths are the documented way out
     ("cd /tmp && " + TOUCH + " README.md", 2),                 # use /tmp/README.md instead
     ("cd /tmp && " + TOUCH + " /tmp/README.md", 0),
-    ("cd .claude; cd /tmp; " + TOUCH + " scratch.txt", 2),     # a cd into .claude taints it
+    ("cd .claude; cd /tmp; " + TOUCH + " scratch.txt", 2),     # an absolute cd is not followed: scratch.txt is read as a workspace path
     ("cd .rnd/cases/RND-1/artifacts && " + TOUCH + " poc.py", 0),
     ("cd .claude && " + TOUCH + " rnd-policy.json", 2),
     ("cd /tmp | cat; cd .claude; " + TOUCH + " x", 2),         # cd in a pipeline is subshell-local
@@ -862,7 +880,8 @@ def test_safety_gate(ws: Path, cmd: str, agent: str, expected: int) -> None:
     (".claude/scripts/rnd.py", "builder", 2), (".claude/agents/builder.md", "builder", 2), (".rnd/knowledge/shared/x.md", "builder", 2),
     (".rnd/cases/RND-20260101-001-x/case.json", "builder", 2), (".rnd/cases/RND-20260101-001-x/artifacts/poc/main.py", "builder", 0),
     (".rnd/cases/RND-20260101-001-x/experiments/EXP-001/logs/run.log", "builder", 0), (".rnd/cases/RND-20260101-001-x/artifacts/x.py", "isolated-builder", 0),
-    ("README.md", "builder", 2),  # top-level documents are Lead-owned (".rnd/cases/RND-20260101-001-x/artifacts/x.py", "researcher", 2), ("anything.md", "codex-reviewer", 2),
+    ("README.md", "builder", 2), ("src/main.tf", "builder", 2),  # everything outside case output is protected, host code included
+    (".rnd/cases/RND-20260101-001-x/artifacts/x.py", "researcher", 2), ("anything.md", "codex-reviewer", 2),
     ("anything.md", "validator", 2), (".claude/scripts/rnd.py", "", 0),
     ("/tmp/rnd-scratch/probe.py", "builder", 0), ("/etc/hosts", "builder", 2), ("/home/someone/.ssh/id_rsa", "builder", 2),
 ])
@@ -929,6 +948,169 @@ def test_doctor_healthy(ws: Path) -> None:
     new_case(ws)
     r = run(ws, "rnd_doctor.py", check=False)
     assert r.returncode == 0, r.stdout
+
+
+def test_doctor_warns_when_generated_files_are_not_ignored(ws: Path) -> None:
+    (ws / ".gitignore").write_text("")
+    r = run(ws, "rnd_doctor.py", check=False)
+    assert r.returncode == 1 and "generated files not ignored" in r.stdout, r.stdout
+
+
+# --------------------------------------------------------------------------- #
+# install into a host repository
+# --------------------------------------------------------------------------- #
+
+def host_repo(tmp_path: Path) -> Path:
+    """A product repository with its own README, CLAUDE.md, .gitignore and code."""
+    host = tmp_path / "host"
+    host.mkdir()
+    (host / "README.md").write_text("# product\n")
+    (host / "CLAUDE.md").write_text("# product rules\n")
+    (host / ".gitignore").write_text(".terraform/\n")
+    (host / "main.tf").write_text("resource {}\n")
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=host, check=True)
+    return host
+
+
+def install(ws: Path, host: Path, *extra: str) -> subprocess.CompletedProcess:
+    return run(ws, "rnd.py", "install", str(host), *extra, check=False)
+
+
+def test_install_into_host_touches_only_engine_paths(tmp_path: Path, ws: Path) -> None:
+    host = host_repo(tmp_path)
+    r = install(ws, host)
+    assert r.returncode == 0, r.stderr
+    assert (host / ".claude" / "VERSION").read_text() == (ws / ".claude" / "VERSION").read_text()
+    assert (host / ".claude" / "rules" / "rnd-manual.md").exists() and (host / ".claude" / "settings.json").exists()
+    assert (host / ".rnd" / "cases" / ".gitkeep").exists() and (host / ".rnd" / "knowledge" / "shared" / ".gitkeep").exists()
+    # the host's own files are untouched; nothing of ours lands at its root
+    assert (host / "README.md").read_text() == "# product\n" and (host / "CLAUDE.md").read_text() == "# product rules\n"
+    assert not (host / ".codex").exists() and not (host / "VERSION").exists() and not (host / "SPEC.md").exists()
+    gi = (host / ".gitignore").read_text().splitlines()
+    assert ".terraform/" in gi and all(g in gi for g in GENERATED)
+    assert not list((host / ".claude").rglob("__pycache__")) and not list((host / ".claude").rglob("*.pyc"))
+
+    # healthy without any of the framework's root documents
+    r = run(host, "rnd_doctor.py", check=False)
+    assert r.returncode == 0, r.stdout
+    # the host's code is protected from builders, case output is not
+    for path, expected in [("main.tf", 2), (".rnd/cases/RND-20260101-001-x/artifacts/a.py", 0)]:
+        payload = {"tool_name": "Write", "tool_input": {"file_path": str(host / path)}, "cwd": str(host), "agent_type": "builder"}
+        assert hook(host, "builder-write-guard.py", payload).returncode == expected, path
+    # a second plain install refuses; the gitignore block is not duplicated by an upgrade
+    assert install(ws, host).returncode == 2
+    assert install(ws, host, "--upgrade").returncode == 0
+    assert (host / ".gitignore").read_text().count(GENERATED[0]) == 1
+
+
+def test_install_ignores_caches_in_source_and_host(tmp_path: Path, ws: Path) -> None:
+    host = host_repo(tmp_path)
+    (ws / ".claude" / "scripts" / "__pycache__").mkdir(exist_ok=True)
+    (ws / ".claude" / "scripts" / "__pycache__" / "rndlib.cpython-312.pyc").write_bytes(b"x")
+    (ws / ".claude" / "scripts" / "stray.pyc").write_bytes(b"x")
+    (host / ".claude" / "scripts").mkdir(parents=True)
+    (host / ".claude" / "scripts" / "stray.pyc").write_bytes(b"y")             # a cache file is not a clash
+    assert install(ws, host).returncode == 0
+    assert not (host / ".claude" / "scripts" / "__pycache__").exists() and (host / ".claude" / "scripts" / "stray.pyc").read_bytes() == b"y"
+    (host / ".gitignore").write_text("\n".join(GENERATED[:3]) + "\n")            # caches no longer ignored
+    r = run(host, "rnd_doctor.py", check=False)
+    assert r.returncode == 1 and "__pycache__" in r.stdout and ".pytest_cache" in r.stdout, r.stdout
+
+
+def test_install_merges_existing_settings(tmp_path: Path, ws: Path) -> None:
+    host = host_repo(tmp_path)
+    (host / ".claude" / "agents").mkdir(parents=True)
+    (host / ".claude" / "agents" / "own-agent.md").write_text("---\nname: own\ndescription: host's\n---\n")
+    own = {"permissions": {"allow": ["Bash(terraform plan:*)"]},
+           "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "./own-hook.sh"}]}]}}
+    (host / ".claude" / "settings.json").write_text(json.dumps(own))
+    assert install(ws, host).returncode == 0
+    merged = json.loads((host / ".claude" / "settings.json").read_text())
+    engine = json.loads((ws / ".claude" / "settings.json").read_text())
+    assert "Bash(terraform plan:*)" in merged["permissions"]["allow"]
+    assert all(x in merged["permissions"]["allow"] for x in engine["permissions"]["allow"])
+    cmds = [h["command"] for g in merged["hooks"]["PreToolUse"] for h in g["hooks"]]
+    assert "./own-hook.sh" in cmds and any("safety-gate.py" in c for c in cmds) and any("builder-write-guard.py" in c for c in cmds)
+    assert install(ws, host, "--upgrade").returncode == 0
+    again = json.loads((host / ".claude" / "settings.json").read_text())
+    assert again == merged                                    # idempotent: no duplicated hooks or permissions
+    assert (host / ".claude" / "agents" / "own-agent.md").exists() and (host / ".claude" / "agents" / "builder.md").exists()
+
+
+def test_install_refuses_engine_path_clashes_symlinks_and_bad_settings(tmp_path: Path, ws: Path) -> None:
+    host = host_repo(tmp_path)
+    (host / ".claude" / "agents").mkdir(parents=True)
+    (host / ".claude" / "agents" / "builder.md").write_text("the host's own builder")
+    r = install(ws, host)
+    assert r.returncode != 0 and "agents/builder.md" in r.stderr and not (host / ".claude" / "VERSION").exists()
+    assert (host / ".claude" / "agents" / "builder.md").read_text() == "the host's own builder"
+    assert install(ws, host, "--upgrade").returncode != 0            # nothing installed, nothing to upgrade
+    (host / ".claude" / "agents" / "builder.md").unlink()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (host / ".claude" / "scripts").symlink_to(outside)
+    r = install(ws, host)
+    assert r.returncode != 0 and "symlink" in r.stderr and not list(outside.iterdir())
+    (host / ".claude" / "scripts").unlink()
+    (host / ".claude" / "settings.json").write_text("{not json")
+    r = install(ws, host)
+    assert r.returncode != 0 and "settings" in r.stderr and not (host / ".claude" / "VERSION").exists()
+    (host / ".claude" / "settings.json").unlink()
+    (host / ".claude" / "agents").rmdir()
+    (host / ".claude" / "agents").write_text("a file where a directory must go")
+    r = install(ws, host)
+    assert r.returncode != 0 and "not a directory" in r.stderr and not (host / ".claude" / "VERSION").exists()
+    (host / ".claude" / "agents").unlink()
+    (host / ".claude" / "settings.json.tmp").symlink_to(tmp_path / "victim")
+    r = install(ws, host)
+    assert r.returncode != 0 and "symlink" in r.stderr and not (tmp_path / "victim").exists()
+    (host / ".claude" / "settings.json.tmp").unlink()
+    os.mkfifo(host / ".claude" / "settings.json.tmp")
+    r = install(ws, host)
+    assert r.returncode != 0 and "regular file" in r.stderr and not (host / ".claude" / "VERSION").exists()
+    (host / ".claude" / "settings.json.tmp").unlink()
+    assert install(ws, host).returncode == 0
+    (host / ".claude" / "VERSION").write_text("x/../../../victim\n")
+    r = install(ws, host, "--upgrade")
+    assert r.returncode != 0 and "semver" in r.stderr
+    (host / ".claude" / "VERSION").unlink()
+    os.mkfifo(host / ".claude" / "VERSION")                       # must be refused before anything reads it
+    r = install(ws, host, "--upgrade")
+    assert r.returncode != 0 and "regular file" in r.stderr
+
+
+def test_install_hook_dedupe_is_per_matcher(tmp_path: Path, ws: Path) -> None:
+    host = host_repo(tmp_path)
+    (host / ".claude").mkdir()
+    guard = 'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/builder-write-guard.py"'
+    own = {"hooks": {"PreToolUse": [{"matcher": "Write", "hooks": [{"type": "command", "command": guard}]}]}}
+    (host / ".claude" / "settings.json").write_text(json.dumps(own))
+    assert install(ws, host).returncode == 0
+    groups = json.loads((host / ".claude" / "settings.json").read_text())["hooks"]["PreToolUse"]
+    assert [g["matcher"] for g in groups if g["hooks"][0]["command"] == guard] == ["Write", "Write|Edit|MultiEdit|NotebookEdit"]
+
+
+def test_upgrade_replaces_engine_and_keeps_modified_policy(tmp_path: Path, ws: Path) -> None:
+    host = host_repo(tmp_path)
+    assert install(ws, host).returncode == 0
+    (host / ".claude" / "VERSION").write_text("0.0.1\n")
+    pol = json.loads((host / ".claude" / "rnd-policy.json").read_text())
+    pol["protectedPaths"]["builderAllowed"].append("terraform/")
+    (host / ".claude" / "rnd-policy.json").write_text(json.dumps(pol, indent=2) + "\n")
+    r = install(ws, host, "--upgrade")
+    assert r.returncode == 0 and "0.0.1 ->" in r.stdout, r.stdout + r.stderr
+    assert (host / ".claude" / "VERSION").read_text() == (ws / ".claude" / "VERSION").read_text()
+    assert "differed from the shipped one" in r.stderr
+    saved = json.loads((host / ".claude" / "rnd-policy.json.orig-0.0.1").read_text())
+    assert "terraform/" in saved["protectedPaths"]["builderAllowed"]
+    assert "terraform/" not in json.loads((host / ".claude" / "rnd-policy.json").read_text())["protectedPaths"]["builderAllowed"]
+    # the same old version upgraded again with another local change keeps the first backup
+    (host / ".claude" / "VERSION").write_text("0.0.1\n")
+    pol["protectedPaths"]["builderAllowed"].append("modules/")
+    (host / ".claude" / "rnd-policy.json").write_text(json.dumps(pol, indent=2) + "\n")
+    assert install(ws, host, "--upgrade").returncode == 0
+    assert json.loads((host / ".claude" / "rnd-policy.json.orig-0.0.1").read_text()) == saved
+    assert "modules/" in json.loads((host / ".claude" / "rnd-policy.json.orig-0.0.1-2").read_text())["protectedPaths"]["builderAllowed"]
 
 
 def test_stale_detection(ws: Path) -> None:

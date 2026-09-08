@@ -32,10 +32,13 @@
   python3 .claude/scripts/rnd.py index
   python3 .claude/scripts/rnd.py brief                            # compact active-case list (SessionStart)
   python3 .claude/scripts/rnd.py doctor
+  python3 .claude/scripts/rnd.py install <repo> [--upgrade]        # copy this engine into another repository (.claude/ + .rnd/)
 """
 from __future__ import annotations
 
 import argparse
+import fnmatch
+import itertools
 import json
 import re
 import shutil
@@ -1221,6 +1224,135 @@ def cmd_doctor(a: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# install: put this engine into another repository
+# --------------------------------------------------------------------------- #
+
+def _merge_settings(host: dict, engine: dict) -> dict:
+    """Union of permission lists; engine hook groups appended to the host's unless the same (matcher, command) is already there."""
+    out = json.loads(json.dumps(host))
+    perms = out.setdefault("permissions", {})
+    for key in ("allow", "deny"):
+        have = perms.setdefault(key, [])
+        have.extend(x for x in engine.get("permissions", {}).get(key, []) if x not in have)
+    hooks = out.setdefault("hooks", {})
+    for event, groups in engine.get("hooks", {}).items():
+        present = {(g.get("matcher"), h.get("command")) for g in hooks.get(event, []) for h in g.get("hooks", [])}
+        for g in groups:
+            if any((g.get("matcher"), h.get("command")) not in present for h in g.get("hooks", [])):
+                hooks.setdefault(event, []).append(g)
+    return out
+
+
+def _engine_files(src_engine: Path) -> list[Path]:
+    """Every file `install` writes, relative to the engine directory."""
+    out = []
+    for item in rndlib.ENGINE_ITEMS:
+        src = src_engine / item
+        out.extend(p.relative_to(src_engine) for p in (src.rglob("*") if src.is_dir() else [src])
+                   if p.is_file() and not any(fnmatch.fnmatch(part, pat) for part in p.relative_to(src_engine).parts for pat in rndlib.ENGINE_CACHE_PATTERNS))
+    return out
+
+
+def _path_problem(path: Path, top: Path, want_dir: bool) -> str | None:
+    """Why `path` cannot be written safely: a symlink on the way from `top` (the write would land
+    elsewhere), a parent that is not a directory, or the wrong kind of entry already there."""
+    for cand in [path, *path.parents]:
+        if cand == top:
+            break
+        if cand.is_symlink():
+            return f"{cand} is a symlink"
+        if cand != path and cand.exists() and not cand.is_dir():
+            return f"{cand} is not a directory"
+    if path.exists() and (path.is_dir() != want_dir or not (path.is_dir() or path.is_file())):
+        return f"{path} is not a {'directory' if want_dir else 'regular file'}"
+    return None
+
+
+def cmd_install(a: argparse.Namespace) -> int:
+    src_engine = Path(__file__).resolve().parents[1]          # the .claude/ this script belongs to, not ROOT
+    target = Path(a.repo).resolve()
+    if not (target / ".git").exists():
+        die(f"{target} is not a git repository (run `git init` first)")
+    layout = rndlib.LAYOUT
+    dst_engine = target / layout["engineDir"]
+    src_version = (src_engine / "VERSION").read_text(encoding="utf-8").strip()
+    dst_version_file = dst_engine / "VERSION"
+    if problem := _path_problem(dst_version_file, target, want_dir=False):
+        die(f"refusing to write into {target}: {problem}")
+    old_version = dst_version_file.read_text(encoding="utf-8").strip() if dst_version_file.exists() else None
+    if old_version and not a.upgrade:
+        die(f"engine {old_version} is already installed in {target}; use --upgrade to replace it with {src_version}", 2)
+    if a.upgrade and not old_version:
+        die(f"no engine installed in {target} (no {rel(dst_version_file) if dst_version_file.is_relative_to(ROOT) else dst_version_file}); run install without --upgrade")
+    if old_version and not re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", old_version):
+        die(f"{dst_version_file} does not hold a semver line ({old_version!r}); fix it before upgrading")
+
+    # --- pre-flight: decide everything before writing anything -------------------------
+    files = _engine_files(src_engine)
+    dst_settings = dst_engine / rndlib.ENGINE_SETTINGS
+    knowledge, cases = target / layout["knowledgeDir"], target / layout["casesDir"]
+    policy_backup = None
+    if old_version:                                   # never overwrite an earlier backup of the same version
+        policy_backup = dst_engine / f"rnd-policy.json.orig-{old_version}"
+        for n in itertools.count(2):
+            if not policy_backup.exists():
+                break
+            policy_backup = dst_engine / f"rnd-policy.json.orig-{old_version}-{n}"
+    written_files = [dst_engine / f for f in files] + [dst_settings, dst_settings.with_name(dst_settings.name + ".tmp"),
+                                                       target / ".gitignore", cases / ".gitkeep", knowledge / "README.md",
+                                                       knowledge / "shared" / ".gitkeep", knowledge / "candidates" / ".gitkeep"]
+    written_dirs = [dst_engine, cases, knowledge, knowledge / "shared", knowledge / "candidates"] + [dst_engine / i for i in rndlib.ENGINE_ITEMS if (src_engine / i).is_dir()]
+    problems = sorted({m for p, d in [(p, False) for p in written_files + ([policy_backup] if policy_backup else [])] + [(p, True) for p in written_dirs]
+                       if (m := _path_problem(p, target, d))})
+    if problems:
+        die("refusing to write into " + str(target) + ": " + "; ".join(problems))
+    if not old_version:
+        clash = [str(f) for f in files if (dst_engine / f).exists()]
+        if clash:
+            die(f"{target} already has {len(clash)} file(s) at engine paths (no {rel(dst_version_file) if dst_version_file.is_relative_to(ROOT) else dst_version_file}, so this is not an installed engine): "
+                + ", ".join(clash[:10]) + (" ..." if len(clash) > 10 else "") + ". Move them or remove them first.")
+    engine_settings = read_json(src_engine / rndlib.ENGINE_SETTINGS)
+    if dst_settings.exists():
+        try:
+            merged_settings = _merge_settings(read_json(dst_settings), engine_settings)
+        except (ValueError, AttributeError, TypeError) as exc:
+            die(f"{dst_settings} is not valid Claude Code settings JSON ({exc}); nothing was written")
+    else:
+        merged_settings = engine_settings
+    old_policy = dst_engine / "rnd-policy.json"
+    keep_policy = bool(old_version) and old_policy.exists() and old_policy.read_bytes() != (src_engine / "rnd-policy.json").read_bytes()
+
+    # --- write ---------------------------------------------------------------------------
+    if keep_policy:
+        shutil.copy2(old_policy, policy_backup)
+        eprint(f"note: your rnd-policy.json differed from the shipped one; saved as {policy_backup} - re-apply local changes")
+    dst_engine.mkdir(parents=True, exist_ok=True)
+    for item in rndlib.ENGINE_ITEMS:
+        s, d = src_engine / item, dst_engine / item
+        if s.is_dir():                                    # the host's own agents/skills/hooks in the same directories survive
+            shutil.copytree(s, d, dirs_exist_ok=True, ignore=shutil.ignore_patterns(*rndlib.ENGINE_CACHE_PATTERNS))
+        else:
+            shutil.copy2(s, d)
+    write_json(dst_settings, merged_settings)
+    for d in (cases, knowledge / "shared", knowledge / "candidates"):
+        d.mkdir(parents=True, exist_ok=True)
+        (d / ".gitkeep").touch()
+    src_readme = src_engine.parent / layout["knowledgeDir"] / "README.md"
+    if src_readme.exists():
+        write_text(knowledge / "README.md", src_readme.read_text(encoding="utf-8"), overwrite=False)
+    gi = target / ".gitignore"
+    lines = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
+    missing = [g for g in rndlib.HOST_IGNORE_LINES if g not in lines]
+    if missing:
+        block = ["# generated by the ai-rnd-framework engine (index, catalog, Python caches)", *missing]
+        gi.write_text("\n".join(lines + ([""] if lines and lines[-1] else []) + block) + "\n", encoding="utf-8")
+    what = f"upgraded {old_version} -> {src_version}" if old_version else f"installed {src_version}"
+    print(f"ai-rnd-framework engine {what} in {target}")
+    print(f"next: cd {target} && python3 {layout['scriptsDir']}/rnd.py doctor")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # arg parsing
 # --------------------------------------------------------------------------- #
 
@@ -1295,10 +1427,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sp.add_parser("index"); p.set_defaults(fn=cmd_index)
     p = sp.add_parser("brief"); p.set_defaults(fn=cmd_brief)
     p = sp.add_parser("doctor"); p.set_defaults(fn=cmd_doctor)
+    p = sp.add_parser("install"); p.add_argument("repo"); p.add_argument("--upgrade", action="store_true"); p.set_defaults(fn=cmd_install)
     return ap
 
 
-READ_ONLY_CMDS = {"search", "list", "show", "resume", "findings", "brief", "doctor", "index", "handoff", "stale"}
+READ_ONLY_CMDS = {"search", "list", "show", "resume", "findings", "brief", "doctor", "index", "handoff", "stale", "install"}
 
 
 def main(argv: list[str] | None = None) -> int:

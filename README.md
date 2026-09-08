@@ -4,24 +4,26 @@
 
 > Multi-agent AI workspace for technical R&D, experimentation, review convergence, validation, and reusable knowledge.
 
-This repository is the **framework**: the engine plus its documentation, with no R&D data. You copy it once and it becomes *your* permanent R&D workspace, where your cases are committed alongside it. See [Use it as your own workspace](#use-it-as-your-own-workspace).
+This repository is the **framework**: the engine plus its documentation, with no R&D data. The engine is self-contained in `.claude/` and keeps its data in `.rnd/`, so a workspace is **any Git repository that carries those two directories**: a clone of this repository used as a dedicated R&D workspace, or an existing product, service or infrastructure repository that runs its R&D cases next to its own code. See [Use it](#use-it).
 
-One Git repository is the permanent R&D workspace. Every topic (AWS, Linux, Kubernetes, GPU, LLM, Claude Code, Codex, databases, networks, security, OSS, PoCs...) is an **R&D Case** under `.rnd/cases/`, not a separate repository. Claude Code acts as the R&D Lead and orchestrates specialised subagents; Codex CLI provides independent code review; every case leaves evidence, reproducible experiments, reviewed implementation, validated results and a documented decision behind.
-
-Everything except the top-level documents lives in dot-directories, so the working tree stays clean and the whole workspace is easy to ignore (`.rnd/` for the data alone, `.claude/ .codex/ .rnd/` for everything).
+Within a workspace, one repository holds all the R&D. Every topic (AWS, Linux, Kubernetes, GPU, LLM, Claude Code, Codex, databases, networks, security, OSS, PoCs...) is an **R&D Case** under `.rnd/cases/`, not a separate repository. Claude Code acts as the R&D Lead and orchestrates specialised subagents; Codex CLI provides independent code review; every case leaves evidence, reproducible experiments, reviewed implementation, validated results and a documented decision behind.
 
 ```
-ai-rnd-workspace/
-├── README.md  SPEC.md  CLAUDE.md  CHANGELOG.md  VERSION  LICENSE   # the only visible files
-├── .claude/          R&D Engine
-│   ├── agents/  skills/  hooks/  rules/  settings.json  rnd-policy.json
+<any repository>/
+├── (the repository's own files - README, CLAUDE.md, code ... untouched)
+├── .claude/          R&D Engine            (installed by rnd.py install)
+│   ├── VERSION  rnd-policy.json  settings.json  (merged into an existing one)
+│   ├── agents/  skills/  hooks/  rules/
 │   └── scripts/  schemas/  tests/  pytest.ini
-├── .codex/           Codex CLI settings
-└── .rnd/             R&D data
-    ├── index.json  INDEX.md
+└── .rnd/             R&D data              (yours; commit it)
+    ├── index.json  INDEX.md                (generated, git-ignored)
     ├── cases/       RND-YYYYMMDD-NNN-<slug>/ ...
-    └── knowledge/   shared/  candidates/  catalog.json
+    └── knowledge/   shared/  candidates/  catalog.json (generated)
+
+ai-rnd-framework/     this repository = the layout above + README.md SPEC.md CLAUDE.md CHANGELOG.md LICENSE .codex/
 ```
+
+`README.md`, `SPEC.md`, `CLAUDE.md`, `CHANGELOG.md`, `LICENSE` and `.codex/config.toml` document and configure *this* repository; they are not installed anywhere. The operating manual Claude Code follows is inside the engine (`.claude/rules/rnd-manual.md`, loaded automatically), so a host repository keeps its own `CLAUDE.md`.
 
 Paths come from `.claude/rnd-policy.json` → `layout`, which `.claude/scripts/rndlib.py` reads. Moving the data directory is a policy edit; moving `.claude/` itself also needs the hook commands in `.claude/settings.json` updated, because Claude Code resolves those before the policy is read.
 
@@ -34,22 +36,35 @@ Full design: [`SPEC.md`](SPEC.md). Operating manual for Claude Code: [`CLAUDE.md
 - [Claude Code](https://code.claude.com) (project settings in `.claude/`)
 - [Codex CLI](https://github.com/openai/codex) on `PATH` (`codex exec` is used for review rounds)
 
-## Use it as your own workspace
+## Use it
+
+### In an existing repository
 
 ```bash
-# 1. take a copy (GitHub: "Use this template", or a plain clone)
-git clone https://github.com/nix-tkobayashi/ai-rnd-framework.git my-rnd-workspace
-cd my-rnd-workspace && rm -rf .git && git init -b main
-
-# 2. check the engine on your machine
-python3 .claude/scripts/rnd.py doctor        # tooling, hooks, schemas, policy
-python3 -m pytest .claude/tests -q           # 193 engine tests
-
-# 3. start working - your cases are committed with the engine from here on
+git clone https://github.com/nix-tkobayashi/ai-rnd-framework.git        # once, anywhere
+python3 ai-rnd-framework/.claude/scripts/rnd.py install /path/to/your-repo
+cd /path/to/your-repo
+python3 .claude/scripts/rnd.py doctor        # tooling, hooks, schemas, policy - passes with none of our root documents
 python3 .claude/scripts/rnd.py new "<title>" --question "<your question>"
 ```
 
-`.rnd/cases/` and `.rnd/knowledge/` ship empty on purpose: the framework carries no R&D data, and **your** cases are meant to be tracked in your copy (SPEC 33/45 - the case history and the knowledge are the output). Only the generated index (`.rnd/index.json`, `.rnd/INDEX.md`, `.rnd/knowledge/catalog.json`) stays untracked; `rnd.py doctor` recreates it on a fresh clone.
+`install` copies the engine into `.claude/`, creates the `.rnd/` skeleton, merges `.claude/settings.json` if the repository already has one (permission lists are united; engine hooks are appended next to yours) and adds the three generated files to `.gitignore`. It never writes anything else: your `README.md`, `CLAUDE.md`, code, and your own files under `.claude/` stay as they are. It checks before it writes and refuses, without touching the repository, when files already exist at engine paths, when a destination goes through a symlink, or when the existing `settings.json` is not valid JSON. A repository that already has the engine is refused unless you pass `--upgrade`, which replaces the engine files, keeps your merged `settings.json`, and saves a modified `rnd-policy.json` as `rnd-policy.json.orig-<old version>` for you to re-apply local changes (for example a `protectedPaths.builderAllowed` entry that opens part of your code to builders).
+
+Inside a host repository the builders' write boundary covers the host's own code: builders may write only case output (`.rnd/cases/<CASE>/artifacts/`, experiment logs, `/tmp`) unless `.claude/rnd-policy.json` → `protectedPaths.builderAllowed` names another path. The engine's `permissions.deny` (`~/.ssh`, `~/.aws`, `sudo`, `git push --force`, `git reset --hard`) and its `PreToolUse` hooks apply to every session in that repository, not only to R&D work.
+
+### As a dedicated workspace
+
+```bash
+git clone https://github.com/nix-tkobayashi/ai-rnd-framework.git my-rnd-workspace
+cd my-rnd-workspace && rm -rf .git && git init -b main
+python3 .claude/scripts/rnd.py doctor
+python3 -m pytest .claude/tests -q           # engine tests
+python3 .claude/scripts/rnd.py new "<title>" --question "<your question>"
+```
+
+Either way `.rnd/cases/` and `.rnd/knowledge/` start empty on purpose: the framework carries no R&D data, and **your** cases are meant to be tracked in your repository (SPEC 33/45 - the case history and the knowledge are the output). Only the generated index (`.rnd/index.json`, `.rnd/INDEX.md`, `.rnd/knowledge/catalog.json`) stays untracked; `rnd.py doctor` recreates it on a fresh clone.
+
+Upgrading later: pull this repository and run `python3 <clone>/.claude/scripts/rnd.py install <your repo> --upgrade`. The installed version is `.claude/VERSION`.
 
 Optional local tuning: `CLAUDE.local.md` (machine-specific notes) and `.claude/settings.local.json` are git-ignored.
 
@@ -92,7 +107,9 @@ sandbox and not an authorisation boundary. Known limits, so an unexpected denial
   (`git push origin +HEAD:main`, `git reset HEAD --hard`).
 - **False positives.** A protected path or a write verb appearing as an *argument* can trip it:
   `rg touch .claude/scripts`, `cp README.md /tmp/copy`, `git worktree list`. Relative paths are read
-  as workspace paths, so use an absolute path (`/tmp/...`) for scratch files outside the workspace.
+  as workspace paths; only `cd <relative dir> &&` earlier in the same command moves them (after
+  `cd dir;` or a newline the old directory is checked too, and an absolute `cd` is not followed), so
+  chain with `&&` and use an absolute path (`/tmp/...`) for scratch files outside the workspace.
 
 If you need a hard boundary around shell execution, put one outside this framework: run it in a
 container or a VM, or use the Claude Code permission settings, which you own. The value of the role
@@ -114,7 +131,7 @@ not that the builder is imprisoned.
 ## Scripts
 | Script | Purpose |
 |--------|---------|
-| `.claude/scripts/rnd.py` | case lifecycle CLI (new/search/resume/state/research/report/agent/evidence/experiment/review/findings/tests/validate/decide/archive/index) |
+| `.claude/scripts/rnd.py` | case lifecycle CLI (new/search/resume/state/research/report/agent/evidence/experiment/review/findings/tests/validate/decide/archive/index) and `install <repo> [--upgrade]` |
 | `.claude/scripts/codex_review.py` | one Codex review round: tests → `codex exec` (read-only, JSON schema) → merge findings → gate |
 | `.claude/scripts/review_gate.py` | convergence verdict: CONVERGED / NOT_CONVERGED / FAILED_TO_CONVERGE / REVIEW_OSCILLATION |
 | `.claude/scripts/safety_check.py` | command / path / secret / diff checks shared by the hooks |

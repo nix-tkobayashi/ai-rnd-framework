@@ -20,16 +20,14 @@ import rndlib  # noqa: E402
 from rndlib import ROOT, read_json  # noqa: E402
 
 REQUIRED_FILES = [
-    "CLAUDE.md", "README.md", ".gitignore", "VERSION", "CHANGELOG.md", "LICENSE",
-    ".claude/settings.json", ".claude/rnd-policy.json", ".claude/pytest.ini",
+    ".claude/VERSION", ".claude/settings.json", ".claude/rnd-policy.json", ".claude/pytest.ini",
     ".claude/agents/researcher.md", ".claude/agents/critic.md", ".claude/agents/claim-verifier.md",
     ".claude/agents/experiment-designer.md", ".claude/agents/builder.md", ".claude/agents/isolated-builder.md",
     ".claude/agents/codex-reviewer.md", ".claude/agents/validator.md",
     ".claude/skills/rnd-orchestrator/SKILL.md", ".claude/skills/rnd-case/SKILL.md",
     ".claude/skills/review-convergence/SKILL.md", ".claude/skills/knowledge-promotion/SKILL.md",
     ".claude/hooks/safety-gate.py", ".claude/hooks/builder-write-guard.py", ".claude/hooks/reviewer-shell-guard.py",
-    ".claude/rules/rnd.md", ".claude/rules/review.md",
-    ".codex/config.toml",
+    ".claude/rules/rnd.md", ".claude/rules/review.md", ".claude/rules/rnd-manual.md",
     ".claude/scripts/rnd.py", ".claude/scripts/rnd_doctor.py", ".claude/scripts/codex_review.py",
     ".claude/scripts/review_gate.py", ".claude/scripts/safety_check.py", ".claude/scripts/generate_index.py",
     ".claude/scripts/rndlib.py",
@@ -54,7 +52,7 @@ class Report:
 
 def check_tooling(r: Report) -> None:
     ver = rndlib.engine_version()
-    (r.ok if __import__("re").fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", ver) else r.fail)("engine version", repr(ver) + " (VERSION must be a bare semver line)")
+    (r.ok if __import__("re").fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", ver) else r.fail)("engine version", repr(ver) + " (.claude/VERSION must be a bare semver line)")
     v = sys.version_info
     (r.ok if v >= (3, 10) else r.fail)("python", f"{v.major}.{v.minor}.{v.micro}")
     codex = shutil.which("codex")
@@ -90,6 +88,12 @@ def check_layout(r: Report) -> None:
     for h in (ROOT / ".claude" / "hooks").glob("*.py"):
         if not os.access(h, os.X_OK):
             r.warn(f"hook {h.name}", "not executable (chmod +x)")
+    # generated files must stay out of the host repository's history
+    unignored = [f for f in rndlib.HOST_IGNORE_PROBES if rndlib.git("check-ignore", "-q", f).returncode != 0]
+    if unignored:
+        r.warn(".gitignore", "generated files not ignored: " + ", ".join(unignored) + " (rnd.py install adds the lines)")
+    else:
+        r.ok(".gitignore", "generated files and caches ignored")
 
 
 def check_policy_and_settings(r: Report) -> None:

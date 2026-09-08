@@ -1,12 +1,66 @@
 # Changelog
 
 All notable changes to the ai-rnd-workspace engine are recorded here. The engine
-version lives in `VERSION` (semantic versioning); R&D cases under `.rnd/cases/`
+version lives in `.claude/VERSION` (semantic versioning); R&D cases under `.rnd/cases/`
 are history, not part of the engine version.
 
 The published history starts at 0.5.0, the first release meant to be shared.
 Versions 0.1.0-0.4.0 were developed privately and their commits are not part of
 this repository; the entries below record what changed in each of them.
+
+## [0.7.0] - 2026-09-08
+
+The engine can now be installed into an existing repository. Until now the framework assumed
+that the repository *is* the workspace: its documents sat at the root, `rnd_doctor.py` required
+them, and the builder boundary only protected the engine, which is fine when nothing else is in
+the repository and wrong when a product's code is. A workspace is now any Git repository that
+carries the engine in `.claude/` and its data in `.rnd/`; the dedicated workspace is the special
+case where the repository holds nothing else (SPEC §2, §3, §6, §33, §34, §37, §42, §44).
+
+### Added
+- `rnd.py install <repo> [--upgrade]`: copies the engine (`rndlib.ENGINE_ITEMS`) into the target
+  repository's `.claude/`, creates the `.rnd/` skeleton, merges an existing `.claude/settings.json`
+  (permission lists united, engine hook groups appended unless the command is already there) and
+  adds the three generated files and the engine's Python caches to the target's `.gitignore`
+  (the hooks compile the scripts on every run). It writes nothing else: the host's
+  `README.md`, `CLAUDE.md` and code are untouched. Everything is checked before anything is
+  written: a second install is refused without `--upgrade`, a first install is refused when the
+  host already has files at engine paths, a destination reached through a symlink is refused, and
+  an unparsable host `settings.json` stops the install. Engine directories are merged, so the
+  host's own agents, skills or hooks in `.claude/` survive. An upgrade keeps the merged settings
+  and saves a modified `rnd-policy.json` as `rnd-policy.json.orig-<old version>`.
+- `.claude/rules/rnd-manual.md`: the operating manual that used to be the root `CLAUDE.md`, now
+  inside the engine so it is loaded in any host repository next to that repository's own
+  `CLAUDE.md`. "Start here" applies to R&D requests; ordinary work on the host's code is not a case.
+- `rnd_doctor.py` warns when the generated index files or the engine's Python caches are not
+  git-ignored.
+
+### Changed
+- Engine version moved from `VERSION` to `.claude/VERSION` (`rndlib.VERSION_FILE`).
+- `rnd_doctor.py` no longer requires `CLAUDE.md`, `README.md`, `.gitignore`, `VERSION`,
+  `CHANGELOG.md`, `LICENSE` or `.codex/config.toml`: those document and configure the framework
+  repository and are not installed. `.codex/config.toml` was never needed by the review wrapper,
+  which passes `--skip-git-repo-check -s read-only` itself.
+- Root `CLAUDE.md` now describes the distribution repository (how to work on the engine).
+- `rules/rnd.md`: rule 1 and 2 say where cases live and that only R&D requests start with a
+  case search, instead of assuming every request in the repository is R&D.
+- Engine tests copy `.claude/` only (the test workspace has no root documents), matching a host.
+
+### Fixed - write boundary
+- Builders are confined by an **allow-list** (`protectedPaths.builderAllowed`, formerly
+  `builderAllowedWithinDenied`): case artifacts, experiment logs and temporary directories.
+  Before, any path not on the deny-list was writable, so in a host repository a builder could
+  have edited the product's code. `builderDenied` remains the list `safety_check.py diff`
+  flags before a commit.
+- `write_targets` walks the statements of a command in order (physical lines included) and
+  follows `cd` in command position: a `cd <relative>` that starts a list and is followed by `&&`
+  moves the directory later relative writes are read against; a `cd` that may not have run or
+  may have failed (conditional after `&&`/`||`, or followed by `;` or a newline) makes later writes
+  be checked against both the new and the old directory; an absolute `cd`, `cd -`, `cd ~`, a bare
+  `cd`, or a `cd` inside a pipeline keeps the workspace, and a backgrounded list undoes its moves.
+  Redirections on the `cd` statement are still collected and never read as its argument.
+  `cd .rnd/cases/<CASE>/artifacts && touch poc.py` stays allowed under the allow-list; use `&&`
+  after `cd`, and `/tmp/...` for scratch outside the workspace.
 
 ## [0.6.1] - 2026-09-08
 
