@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Codex reviewer response (passed to `codex exec --output-schema`)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "previousFindingsResolution", "findings"],
+  "properties": {
+    "verdict": { "type": "string", "enum": ["CLEAN", "FINDINGS"] },
+    "summary": { "type": "string" },
+    "previousFindingsResolution": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "resolution", "comment"],
+        "properties": {
+          "id": { "type": "string" },
+          "resolution": { "type": "string", "enum": ["confirmed_fixed", "still_open", "false_positive"] },
+          "comment": { "type": "string" }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "category", "file", "line", "title", "description", "suggestedFix", "actionable"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["blocking", "high", "medium", "low", "info"] },
+          "category": { "type": "string", "enum": ["correctness", "security", "concurrency", "performance", "reliability", "test-gap", "maintainability", "style", "other"] },
+          "file": { "type": "string" },
+          "line": { "type": ["integer", "null"] },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "suggestedFix": { "type": "string" },
+          "actionable": { "type": "boolean" }
+        }
+      }
+    }
+  }
+}

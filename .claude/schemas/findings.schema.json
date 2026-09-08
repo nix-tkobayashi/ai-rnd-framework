@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-rnd-workspace/schemas/findings.schema.json",
+  "title": "Codex Review Round Findings",
+  "description": "rnd/<CASE>/reviews/round-NN/findings.json - findings produced by the Codex reviewer for one round.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "caseId", "round", "reviewer", "verdict", "reviewedAt", "findings"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "caseId": { "type": "string", "pattern": "^RND-[0-9]{8}-[0-9]{3}$" },
+    "round": { "type": "integer", "minimum": 1 },
+    "reviewer": { "type": "string", "description": "e.g. codex-cli/<version>" },
+    "model": { "type": "string" },
+    "verdict": { "type": "string", "enum": ["CLEAN", "FINDINGS", "ERROR"] },
+    "reviewedAt": { "type": "string", "format": "date-time" },
+    "diffBase": { "type": ["string", "null"] },
+    "diffHash": { "type": "string", "description": "sha256 of the reviewed diff, to prove what was reviewed." },
+    "summary": { "type": "string" },
+    "rawOutput": { "type": "string", "description": "Relative path to the raw Codex output file." },
+    "previousFindingsResolution": {
+      "type": "array",
+      "description": "Codex verdict on findings that were fixed_pending_review / disputed in the previous round.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "resolution"],
+        "properties": {
+          "id": { "type": "string" },
+          "resolution": { "type": "string", "enum": ["confirmed_fixed", "still_open", "false_positive", "accepted_risk"] },
+          "comment": { "type": "string" }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "fingerprint", "severity", "category", "file", "title", "description", "status", "actionable"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^F-[0-9]{2}-[0-9]{3}$", "description": "F-<round>-<seq>" },
+          "fingerprint": { "type": "string", "description": "Stable hash of (file, normalized title, category) used for oscillation detection across rounds." },
+          "severity": { "type": "string", "enum": ["blocking", "high", "medium", "low", "info"] },
+          "category": { "type": "string", "enum": ["correctness", "security", "concurrency", "performance", "reliability", "test-gap", "maintainability", "style", "other"] },
+          "file": { "type": "string" },
+          "line": { "type": ["integer", "null"], "minimum": 1 },
+          "title": { "type": "string", "maxLength": 200 },
+          "description": { "type": "string" },
+          "suggestedFix": { "type": "string" },
+          "actionable": { "type": "boolean", "description": "false for info/style notes that do not block convergence." },
+          "status": { "type": "string", "enum": ["open", "fixed_pending_review", "confirmed_fixed", "disputed", "false_positive", "accepted_risk"] },
+          "firstSeenRound": { "type": "integer", "minimum": 1 },
+          "reopenCount": { "type": "integer", "minimum": 0 },
+          "statusHistory": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["at", "status", "by"],
+              "properties": {
+                "at": { "type": "string", "format": "date-time" },
+                "status": { "type": "string" },
+                "by": { "type": "string", "enum": ["codex", "claude", "lead", "user"] },
+                "note": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+# Codex CLI settings for ai-rnd-workspace (project-level).
+#
+# The Codex Reviewer is invoked by scripts/codex_review.py as:
+#   codex exec --skip-git-repo-check -C <root> -s read-only --output-schema schemas/codex-review-output.schema.json -o <file> -
+# The flags below are the intended defaults; the wrapper passes the critical
+# ones (sandbox, schema, cwd) explicitly so behaviour does not depend on this
+# file being picked up. Do NOT pin `model` here - always use the latest default.
+
+# Reviewer must never write: read-only sandbox, no approval prompts (non-interactive).
+sandbox_mode = "read-only"
+approval_policy = "never"
+
+# Keep review sessions out of the user's interactive history noise.
+[history]
+persistence = "save-all"
+
+# Project-level trust so `codex exec` does not stop on the trust prompt.
+[projects."."]
+trust_level = "trusted"

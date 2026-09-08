@@ -1,0 +1,523 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-rnd-workspace/schemas/case.schema.json",
+  "title": "R&D Case",
+  "description": "Single Source of Truth for one R&D Case (rnd/<CASE>/case.json).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "slug",
+    "title",
+    "state",
+    "caseType",
+    "riskLevel",
+    "tags",
+    "keywords",
+    "created",
+    "updated",
+    "research",
+    "experiments",
+    "review",
+    "validation",
+    "decision",
+    "lastAction",
+    "nextAction",
+    "history"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^RND-[0-9]{8}-[0-9]{3}$"
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[^/\\\\\\s]+$",
+      "maxLength": 60,
+      "description": "Directory suffix after the case id; unicode letters allowed."
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "question": {
+      "type": "string",
+      "description": "The original user question / request that opened the case."
+    },
+    "summary": {
+      "type": "string"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "NEW",
+        "TRIAGE",
+        "RESEARCHING",
+        "DESIGNING",
+        "EXPERIMENTING",
+        "BUILDING",
+        "REVIEWING",
+        "VALIDATING",
+        "DECIDED",
+        "ARCHIVED",
+        "BLOCKED",
+        "FAILED",
+        "FAILED_TO_CONVERGE",
+        "INCONCLUSIVE",
+        "STALE"
+      ]
+    },
+    "caseType": {
+      "type": "string",
+      "enum": [
+        "research",
+        "experiment",
+        "implementation"
+      ]
+    },
+    "riskLevel": {
+      "type": "string",
+      "enum": [
+        "standard",
+        "high"
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "keywords": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "freshnessClass": {
+      "type": "string",
+      "enum": [
+        "fast-moving",
+        "normal",
+        "stable"
+      ]
+    },
+    "created": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "owner": {
+      "type": "string"
+    },
+    "targetRepository": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "targetCommit": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "relatedCases": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^RND-[0-9]{8}-[0-9]{3}$"
+      }
+    },
+    "resumedFrom": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^RND-[0-9]{8}-[0-9]{3}$"
+    },
+    "research": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_started",
+            "in_progress",
+            "complete"
+          ]
+        },
+        "researchers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "critics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "synthesis": {
+          "type": "string",
+          "description": "Relative path to research/synthesis.md"
+        },
+        "evidenceCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "completedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    },
+    "experiments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^EXP-[0-9]{3}$"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "approved",
+              "running",
+              "passed",
+              "failed",
+              "inconclusive",
+              "abandoned"
+            ]
+          },
+          "worktree": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "status",
+        "rounds",
+        "maxRounds",
+        "consecutiveClean"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean",
+          "description": "true when the case changed code (Codex review is mandatory)."
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_required",
+            "not_started",
+            "in_progress",
+            "converged",
+            "failed_to_converge",
+            "oscillation"
+          ]
+        },
+        "rounds": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxRounds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "consecutiveClean": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "requiredCleanRounds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requiredTests": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Commands that must PASS for convergence."
+        },
+        "diffBase": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "git ref the review diff is taken against; null = uncommitted working tree."
+        },
+        "lastRoundVerdict": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "CLEAN",
+            "FINDINGS",
+            "ERROR",
+            null
+          ]
+        },
+        "convergedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "not_started",
+            "in_progress",
+            "pass",
+            "fail",
+            "inconclusive"
+          ]
+        },
+        "validator": {
+          "type": "string"
+        },
+        "result": {
+          "type": "string",
+          "description": "Relative path to validation/result.json"
+        },
+        "completedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "recorded"
+          ]
+        },
+        "outcome": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "adopt",
+            "reject",
+            "defer",
+            "partial",
+            "inconclusive",
+            null
+          ]
+        },
+        "summary": {
+          "type": "string"
+        },
+        "recordedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        }
+      }
+    },
+    "knowledgePromotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "promoted": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "lastAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "at",
+        "by",
+        "summary"
+      ],
+      "properties": {
+        "at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "by": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        }
+      }
+    },
+    "nextAction": {
+      "type": "string"
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "at",
+          "event"
+        ],
+        "properties": {
+          "at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "event": {
+            "type": "string"
+          },
+          "from": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "by": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "timeline": {
+      "type": "array",
+      "description": "Agent dispatch timeline recorded by `rnd.py agent start/done` (wall-clock audit).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "agent",
+          "task",
+          "startedAt"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "task": {
+            "type": "string"
+          },
+          "startedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "finishedAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "seconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "done",
+              "failed",
+              "timeout",
+              "cancelled",
+              null
+            ]
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "language": {
+      "type": "string",
+      "pattern": "^[a-z]{2}$",
+      "description": "Output language for reports/synthesis/decision/finding texts (ISO 639-1). Research sources and quotes stay in their original language."
+    }
+  }
+}

@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ai-rnd-workspace/schemas/evidence.schema.json",
+  "title": "Evidence Ledger",
+  "description": "rnd/<CASE>/research/evidence.json - facts with provenance, separated from AI interpretation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "caseId",
+    "evidence"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "caseId": {
+      "type": "string",
+      "pattern": "^RND-[0-9]{8}-[0-9]{3}$"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "claim",
+          "source",
+          "sourceType",
+          "created",
+          "retrievedAt",
+          "freshnessClass",
+          "confidence",
+          "collectedBy"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^EV-[0-9]{3,}$"
+          },
+          "claim": {
+            "type": "string",
+            "description": "The factual statement, quoted or paraphrased closely from the source. No interpretation."
+          },
+          "quote": {
+            "type": "string",
+            "description": "Verbatim excerpt from the source, if available."
+          },
+          "interpretation": {
+            "type": "string",
+            "description": "AI interpretation, kept separate from the claim."
+          },
+          "source": {
+            "type": "string",
+            "description": "URL, file path, command, or document reference."
+          },
+          "sourceType": {
+            "type": "string",
+            "enum": [
+              "official-doc",
+              "release-note",
+              "github-issue",
+              "github-code",
+              "blog",
+              "paper",
+              "experiment",
+              "command-output",
+              "internal-doc",
+              "other"
+            ]
+          },
+          "sourceVersion": {
+            "type": "string",
+            "description": "Product/doc version the evidence refers to, if known."
+          },
+          "created": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the source content was published (best effort)."
+          },
+          "retrievedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastVerified": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "freshnessClass": {
+            "type": "string",
+            "enum": [
+              "fast-moving",
+              "normal",
+              "stable"
+            ]
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "collectedBy": {
+            "type": "string",
+            "description": "Agent name (researcher-official, critic-a, ...)."
+          },
+          "supports": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hypothesis / claim IDs this evidence supports."
+          },
+          "contradicts": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Hypothesis / claim IDs this evidence contradicts."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "superseded",
+              "retracted"
+            ],
+            "default": "active"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "doi": {
+            "type": "string",
+            "description": "DOI or arXiv id (literature)."
+          },
+          "venue": {
+            "type": "string",
+            "description": "Venue + year, e.g. 'USENIX ATC 2025' (literature)."
+          },
+          "peerReviewed": {
+            "type": "boolean",
+            "description": "true for peer-reviewed publications; false for preprints / whitepapers (literature)."
+          },
+          "artifactsAvailable": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "code",
+                "data",
+                "models",
+                "none"
+              ]
+            },
+            "description": "Public artifacts the paper provides (literature)."
+          },
+          "reproducedBy": {
+            "type": "string",
+            "description": "Who independently reproduced the result, or 'none found' (literature)."
+          },
+          "conditions": {
+            "type": "string",
+            "description": "Benchmark / hardware / baseline / metric under which the measured claim holds (literature)."
+          }
+        }
+      }
+    }
+  }
+}
