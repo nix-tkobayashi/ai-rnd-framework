@@ -38,6 +38,10 @@ import review_gate  # noqa: E402
 from rndlib import ROOT, add_history, die, eprint, load_case, now_iso, read_json, rel, save_case, transition, write_json, write_text  # noqa: E402
 
 MAX_DIFF_CHARS = 180_000
+# Untracked files above this size are left out of the pseudo-diff (with a warning); a design
+# document easily passes 200 KB, so the cap is generous and can be raised per case in
+# .claude/rnd-policy.json -> review.maxFileBytes.
+MAX_FILE_BYTES = 1_000_000
 
 
 # --------------------------------------------------------------------------- #
@@ -58,6 +62,13 @@ def _excluded(path: str) -> bool:
     import fnmatch
     return any(fnmatch.fnmatch(path, pat) or fnmatch.fnmatch(path, pat.replace("/*", "/**")) for pat in REVIEW_EXCLUDE) \
         or (path.startswith(".rnd/cases/") and any(seg in ("research", "reports", "reviews", "validation") for seg in Path(path).parts[3:4]))
+
+
+def _max_file_bytes() -> int:
+    try:
+        return int(rndlib.load_policy().get("review", {}).get("maxFileBytes", MAX_FILE_BYTES))
+    except Exception:  # noqa: BLE001
+        return MAX_FILE_BYTES
 
 
 def build_diff(base: str | None, paths: list[str]) -> tuple[str, list[str]]:
@@ -86,7 +97,11 @@ def build_diff(base: str | None, paths: list[str]) -> tuple[str, list[str]]:
         u = [f for f in rndlib.git("ls-files", "--others", "--exclude-standard", "-z", *path_args).stdout.split("\0") if f]
         for f in u:
             p = ROOT / f
-            if not p.is_file() or p.stat().st_size > 200_000 or (not paths and _excluded(f)):
+            if not p.is_file() or (not paths and _excluded(f)):
+                continue
+            cap = _max_file_bytes()
+            if p.stat().st_size > cap:
+                eprint(f"warning: skipping {f} ({p.stat().st_size} bytes > review.maxFileBytes={cap}); review it in its own round or raise the cap in .claude/rnd-policy.json")
                 continue
             try:
                 body = p.read_text(encoding="utf-8")

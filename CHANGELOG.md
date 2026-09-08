@@ -8,6 +8,14 @@ The published history starts at 0.5.0, the first release meant to be shared.
 Versions 0.1.0-0.4.0 were developed privately and their commits are not part of
 this repository; the entries below record what changed in each of them.
 
+## [0.7.1] - 2026-09-09
+
+### Fixed
+- `codex_review.py` silently dropped untracked files larger than 200 KB from the review diff, so a
+  design document that grew past that size was reviewed only if Codex happened to open it from
+  disk. The cap is now 1 MB, overridable per workspace with `review.maxFileBytes` in
+  `.claude/rnd-policy.json`, and a skipped file is reported with a warning on stderr.
+
 ## [0.7.0] - 2026-09-08
 
 The engine can now be installed into an existing repository. Until now the framework assumed
