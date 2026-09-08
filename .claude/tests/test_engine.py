@@ -1079,6 +1079,11 @@ def test_install_refuses_engine_path_clashes_symlinks_and_bad_settings(tmp_path:
     assert r.returncode != 0 and "regular file" in r.stderr
 
 
+def test_install_refuses_its_own_repository(ws: Path) -> None:
+    r = install(ws, ws)
+    assert r.returncode != 0 and "installed from" in r.stderr and not (ws / ".claude" / "rnd-policy.json.orig-0.7.1").exists()
+
+
 def test_install_hook_dedupe_is_per_matcher(tmp_path: Path, ws: Path) -> None:
     host = host_repo(tmp_path)
     (host / ".claude").mkdir()

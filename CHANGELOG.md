@@ -8,6 +8,12 @@ The published history starts at 0.5.0, the first release meant to be shared.
 Versions 0.1.0-0.4.0 were developed privately and their commits are not part of
 this repository; the entries below record what changed in each of them.
 
+## [0.7.2] - 2026-09-09
+
+### Fixed
+- `rnd.py install` refused nothing when the target was the repository the engine is installed from
+  and failed half-way with `SameFileError`; it now stops before writing.
+
 ## [0.7.1] - 2026-09-09
 
 ### Fixed

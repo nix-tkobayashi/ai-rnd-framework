@@ -1273,6 +1273,8 @@ def cmd_install(a: argparse.Namespace) -> int:
     target = Path(a.repo).resolve()
     if not (target / ".git").exists():
         die(f"{target} is not a git repository (run `git init` first)")
+    if target == src_engine.parent.resolve():
+        die(f"{target} is the repository this engine is installed from; install into another repository")
     layout = rndlib.LAYOUT
     dst_engine = target / layout["engineDir"]
     src_version = (src_engine / "VERSION").read_text(encoding="utf-8").strip()
