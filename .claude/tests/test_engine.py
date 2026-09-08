@@ -457,9 +457,11 @@ def test_review_reopen_never_reuses_round_numbers(ws: Path) -> None:
 
 
 @pytest.mark.parametrize("cmd,expected", [
-    # a shell's own cd rules: the parent shell only moves for a non-piped cd
-    ("cd /tmp && " + TOUCH + " README.md", 0),                 # writes /tmp/README.md
-    ("cd .claude; cd /tmp; " + TOUCH + " scratch.txt", 0),     # ends up in /tmp
+    # relative paths are read as workspace paths (cd is not modelled - see write_targets);
+    # this errs towards denying, and absolute paths are the documented way out
+    ("cd /tmp && " + TOUCH + " README.md", 2),                 # use /tmp/README.md instead
+    ("cd /tmp && " + TOUCH + " /tmp/README.md", 0),
+    ("cd .claude; cd /tmp; " + TOUCH + " scratch.txt", 2),     # a cd into .claude taints it
     ("cd .rnd/cases/RND-1/artifacts && " + TOUCH + " poc.py", 0),
     ("cd .claude && " + TOUCH + " rnd-policy.json", 2),
     ("cd /tmp | cat; cd .claude; " + TOUCH + " x", 2),         # cd in a pipeline is subshell-local
@@ -513,6 +515,55 @@ def test_reopen_leaves_room_for_the_required_clean_streak(ws: Path) -> None:
     assert r.returncode == 2, r.stdout
     r = run(ws, "codex_review.py", cid, check=False, env=env)     # second CLEAN -> converged
     assert r.returncode == 0 and case_json(ws, cid)["review"]["status"] == "converged"
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    # shell words are formed the way a shell forms them
+    (TOUCH + " .clau'de/x'", 2),                       # one word: .claude/x
+    (TOUCH + " /tmp/'README.md'", 0),                  # one word: /tmp/README.md
+    # quoted text is an argument, never a command
+    ("rg '" + TOUCH + " .claude/x' .claude/tests", 0),
+    ("grep -rn '" + GIT + " reset --hard' .claude", 0),
+    ("printf '%s\\n' '" + TOUCH + " .claude/x'", 0),
+    # an executable heredoc keeps its own quoting so interpreter writes are still seen
+    ("python3 <<'PY'\nopen('.claude/x', 'w').write('x')\nPY", 2),
+    ("node <<'JS'\nrequire('fs').writeFileSync('.claude/x','y')\nJS", 2),
+    # cd forms: a cd into a protected directory taints the relative writes beside it
+    ("cd .claude; true || cd /tmp; " + TOUCH + " x", 2),
+    ("cd .claude; (true; cd /tmp; true); " + TOUCH + " x", 2),
+    ("(cd .claude; " + TOUCH + " x)", 2),
+    ("cd .claude >/dev/null; " + TOUCH + " x", 2),
+    ("cd -- .claude; " + TOUCH + " x", 2),
+    ("cd .claude; # comment; cd /tmp\n" + TOUCH + " x", 2),
+    # redirect spellings
+    ("echo hi >| .claude/x", 2),
+    ("echo hi 3> .codex/x", 2),
+    ("echo hi > .rnd/cases/RND-1/artifacts/out.txt", 0),
+    # line continuations cannot hide a destructive command
+    (GIT + " \\\n  reset --hard", 2),
+    (RM + " \\\n -rf /", 2),
+    # ordinary work
+    ("mkdir -p .rnd/cases/RND-1/artifacts/poc", 0),
+    ("sed -i s/a/b/ .rnd/cases/RND-1/artifacts/x.py", 0),
+    ("sed -i s/a/b/ .claude/settings.json", 2),
+    ("python3 -m pytest .claude/tests -q", 0),
+])
+def test_safety_gate_shell_words(ws: Path, cmd: str, expected: int) -> None:
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "agent_type": "builder", "cwd": str(ws)}
+    assert hook(ws, "safety-gate.py", payload).returncode == expected, cmd
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("python3 -c \"from pathlib import Path; p=Path('.claude/x'); p.rename('.claude/y')\"", 2),
+    ("python3 -c \"import subprocess as s; s.check_call(['true'])\"", 2),
+    ("python3 -c \"import json, os as o; o.remove('.claude/x')\"", 2),
+    ("python3 -c \"from os import getcwd; print(getcwd())\"", 0),
+    ("python3 -c \"import os; print(os.getcwd())\"", 0),
+    ("python3 -c \"print('a'.replace('a','b'))\"", 0),
+])
+def test_validator_inline_python_receivers(ws: Path, cmd: str, expected: int) -> None:
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "agent_type": "validator", "cwd": str(ws)}
+    assert hook(ws, "reviewer-shell-guard.py", payload).returncode == expected, cmd
 
 
 def test_decide_enforces_completion_criteria(ws: Path) -> None:

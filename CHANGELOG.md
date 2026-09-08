@@ -80,6 +80,28 @@ Fixes for the blockers found by an independent Codex audit of the 0.5.0 tree.
 - `review reopen` grants a fix round plus the consecutive CLEAN rounds the risk level requires, so
   a reopened high-risk review can actually converge.
 
+### Changed - fourth review round (design)
+Four rounds of review showed that modelling shell control flow with regular expressions does not
+converge: each fix closed some bypasses and opened others, or blocked ordinary work. The Bash
+layer was therefore rebuilt around `shlex` tokenisation with a narrower, honest goal.
+
+- Shell words, quoting, escapes, comments and line continuations are resolved by `shlex`, so
+  `touch .clau'de/x'` is one word and a quoted `git reset` string is a search, not a command.
+- Destructive-command patterns are matched on unquoted text and on tokenised statements in
+  command position, so a command split across a line continuation is caught while a quoted search
+  string is not. Interpreter bodies are scanned raw, because a string literal there can execute.
+- Executable heredoc bodies keep their own quoting, so interpreter writes inside `python3 <<'PY'`
+  and `node <<'JS'` are detected.
+- Redirect handling covers `>|`, `&>` and numbered descriptors; `sed -i`, `git` write subcommands
+  and interpreter one-liners are recognised from the token stream.
+- `cd` is no longer modelled. Relative paths are read as workspace paths, and a `cd` into a
+  protected directory taints the relative writes beside it. This errs towards denying; absolute
+  paths are the documented way to write outside the workspace.
+- `permissions.deny` rules were added to `.claude/settings.json` so the tool layer, where the path
+  arrives structured, is the enforced write boundary.
+- README now states what each of the three layers guarantees instead of implying the hooks are a
+  sandbox.
+
 ### Changed
 - README says plainly what the hooks are: defence in depth, not a sandbox. Codex's `-s read-only`
   is the one real sandbox in the loop.

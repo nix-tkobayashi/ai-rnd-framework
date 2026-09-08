@@ -18,6 +18,7 @@ import argparse
 import fnmatch
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -33,89 +34,73 @@ READONLY_AGENTS = {"researcher", "critic", "claim-verifier", "experiment-designe
 # Directories where every agent (incl. builders) may create scratch files.
 TEMP_PREFIXES = ("/tmp/", "/var/tmp/", "/dev/shm/")
 
-# Interpreters: a heredoc fed to one of these is executed, not stored -> keep it for scanning.
+# Interpreters: a heredoc fed to one of these is executed, not stored.
 _INTERPRETER_RE = re.compile(r"(^|[\s;&|(])(ba|z|da)?sh\b|\bpython3?\b|\bperl\b|\bnode\b|\bruby\b|\beval\b|\bsource\b|\bxargs\b")
 _HEREDOC_RE = re.compile(r"(?P<line>[^\n]*<<-?\s*(?P<q>['\"]?)(?P<tag>[A-Za-z_][A-Za-z0-9_]*)(?P=q)[^\n]*)\n(?P<body>.*?)\n[ \t]*(?P=tag)[ \t]*(?=\n|$)", re.S)
 
-# Commands whose (non-option) arguments are written to / deleted.
-_WRITE_CMDS = {"rm", "mv", "cp", "mkdir", "touch", "chmod", "chown", "ln", "truncate", "patch", "tee", "install", "unzip", "rmdir", "shred"}
-_WRITE_CMD_RE = re.compile(r"(^|[\s;&|(])(?:sudo\s+)?(" + "|".join(sorted(_WRITE_CMDS)) + r")\s+((?:[^\s;&|]+\s*)+)")
-_SED_INPLACE_RE = re.compile(r"(^|[\s;&|(])(sed|perl)\s+(-[A-Za-z]*i[A-Za-z]*\S*\s+)((?:[^\s;&|]+\s*)+)")
-_REDIRECT_RE = re.compile(r"(?<![<>0-9])[12]?>>?\s*(?!&)([^\s;&|)]+)")
-_GIT_WRITE_RE = re.compile(r"\bgit\s+(?:-C\s+\S+\s+)?(add|commit|checkout|switch|restore|stash|merge|rebase|reset|apply|rm|mv|clean|worktree\s+add)\b")
-
-
+# Commands whose (non-option) arguments are written to or deleted.
+_WRITE_CMDS = {"rm", "mv", "cp", "mkdir", "touch", "chmod", "chown", "ln", "truncate", "patch",
+               "tee", "install", "unzip", "rmdir", "shred", "dd", "cpio"}
+_GIT_WRITE_SUBCMDS = {"add", "commit", "checkout", "switch", "restore", "stash", "merge", "rebase",
+                      "reset", "apply", "rm", "mv", "clean", "worktree"}
+_REDIRECT_TOKEN_RE = re.compile(r"^\d*(>>?\|?|&>>?)$")
 _SUBST_RE = re.compile(r"\$\((?P<paren>[^()]*(?:\([^()]*\)[^()]*)*)\)|`(?P<tick>[^`]*)`", re.S)
 
-
-def _substitutions(text: str) -> str:
-    """Command substitutions inside `text`, joined - they execute even inside double quotes.
-    Backslash-escaped forms (\\$(...) in a heredoc body) are inert and are skipped."""
-    out = []
-    for m in _SUBST_RE.finditer(text):
-        backslashes = len(text[:m.start()]) - len(text[:m.start()].rstrip("\\"))
-        if backslashes % 2:                 # odd count escapes the $ or the backtick
-            continue
-        out.append(m.group("paren") or m.group("tick") or "")
-    return " ; ".join(out)
-
-
-def strip_heredocs(cmd: str) -> str:
-    """Remove heredoc bodies that are *data* (cat > file <<EOF ...). A body is kept when it
-    will actually run: piped into or fed to an interpreter, or an unquoted delimiter (which
-    makes the shell expand $(...) and `...` inside the body)."""
-    def repl(m: re.Match) -> str:
-        line, tag, body = m.group("line"), m.group("tag"), m.group("body")
-        after_op = line.split("<<", 1)[1] if "<<" in line else ""
-        if _INTERPRETER_RE.search(line.split("<<", 1)[0]) or _INTERPRETER_RE.search(after_op):
-            return m.group(0)                      # bash <<EOF ... / cat <<EOF | bash
-        if not m.group("q"):                       # unquoted delimiter -> body is expanded
-            return line + "\n" + _substitutions(body) + "\n" + tag
-        return line + "\n" + tag
-    return _HEREDOC_RE.sub(repl, cmd)
-
-
-_SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|;|\n|\||&")
-_CD_RE = re.compile(r"^(?:cd|pushd)\s+(?P<dir>[^\s;&|]+)\s*$")
-# interpreter one-liners that write: python -c "...open(p,'w')...", node -e, perl -e
+# Writes performed by an interpreter one-liner or heredoc body.
 _INTERP_WRITE_RE = re.compile(
-    # open(path, "w" / "a" / "x" / "r+") - a read-only open() is fine
     r"""(?:\bio\.)?\bopen\s*\(\s*["'](?P<open>[^"']+)["']\s*,\s*(?:mode\s*=\s*)?["'][^"']*[wax+][^"']*["']"""
-    # Path("p").write_text(...) / .unlink() / .replace(...) ...
     r"""|\b(?:Path|PurePath)\s*\(\s*["'](?P<path>[^"']+)["']\s*\)\s*(?:\.\s*\w+\s*\([^)]*\)\s*)*"""
     r"""\.\s*(?:write_text|write_bytes|writelines|unlink|mkdir|touch|rename|replace|chmod|rmdir|symlink_to|hardlink_to)\s*\("""
-    # os.remove("p") / shutil.rmtree("p")
     r"""|\bos\s*\.\s*(?:remove|unlink|rmdir|removedirs|rename|replace|mkdir|makedirs|chmod|chown|truncate)\s*\(\s*["'](?P<os>[^"']+)["']"""
     r"""|\bshutil\s*\.\s*(?:rmtree|move|copy|copy2|copyfile|copytree)\s*\(\s*["'](?P<sh>[^"']+)["']"""
-    # node: fs.writeFileSync("p", ...) and friends
     r"""|\b(?:writeFileSync|appendFileSync|createWriteStream|unlinkSync|rmSync|rmdirSync|mkdirSync|renameSync|copyFileSync|truncateSync)"""
     r"""\s*\(\s*["'](?P<node>[^"']+)["']""",
 )
 
 
-def _dequote(tok: str) -> str:
-    """Remove shell quoting from a single word: .clau\"de\"/x -> .claude/x."""
-    return re.sub(r"[\"'\\]", "", tok)
+def _substitutions(text: str) -> str:
+    """Command substitutions in `text` - they execute even inside double quotes. A substitution
+    escaped by an odd number of backslashes is inert, matching the shell."""
+    out = []
+    for m in _SUBST_RE.finditer(text):
+        before = text[:m.start()]
+        if (len(before) - len(before.rstrip("\\"))) % 2:
+            continue
+        out.append(m.group("paren") or m.group("tick") or "")
+    return " ; ".join(out)
 
 
-def _segment_targets(seg: str) -> list[str]:
-    out: list[str] = []
-    for m in _REDIRECT_RE.finditer(seg):
-        out.append(m.group(1))
-    for m in _WRITE_CMD_RE.finditer(seg):
-        out.extend(t for t in m.group(3).split() if not t.startswith("-"))
-    for m in _SED_INPLACE_RE.finditer(seg):
-        out.extend([t for t in m.group(4).split() if not t.startswith("-")][1:])
-    for m in _INTERP_WRITE_RE.finditer(seg):
-        out.extend(g for g in (m.group("open"), m.group("path"), m.group("os"), m.group("sh"), m.group("node")) if g)
-    if _GIT_WRITE_RE.search(seg):
-        out.append(".git/")
-    return out
+def split_heredocs(cmd: str) -> tuple[str, list[str]]:
+    """Return (command text without heredoc bodies, bodies that will actually execute).
+
+    A body is inert data unless its delimiter is unquoted (the shell expands it) or the line
+    feeds an interpreter (`bash <<EOF`, `cat <<EOF | node`)."""
+    live: list[str] = []
+
+    def repl(m: re.Match) -> str:
+        line, tag, body = m.group("line"), m.group("tag"), m.group("body")
+        before, after = line.split("<<", 1)[0], line.split("<<", 1)[1]
+        if _INTERPRETER_RE.search(before) or _INTERPRETER_RE.search(after):
+            live.append(body)                       # executed by an interpreter
+        elif not m.group("q"):
+            live.append(_substitutions(body))       # unquoted delimiter: substitutions expand
+        return line + "\n" + tag
+
+    stripped = _HEREDOC_RE.sub(repl, cmd)
+    return stripped, [b for b in live if b.strip()]
 
 
-def _neutralise_quoted(text: str) -> str:
-    """Keep quoted *content* (paths are often quoted) but drop its shell *structure*, so text
-    inside quotes can never introduce a statement separator or a `cd`."""
+def strip_heredocs(cmd: str) -> str:
+    """Backwards-compatible helper: the command with inert heredoc bodies removed."""
+    stripped, live = split_heredocs(cmd)
+    return stripped + ("\n" + "\n".join(live) if live else "")
+
+
+def normalise_text(text: str) -> str:
+    """Join line continuations and drop comments, leaving quoting intact. Used for the
+    destructive-command patterns, which must see real command text and not the inside of a
+    quoted argument (`grep 'git reset --hard'` is a search, not a command)."""
+    text = text.replace("\\\n", " ")
     out, quote, esc = [], "", False
     for ch in text:
         if esc:
@@ -127,94 +112,181 @@ def _neutralise_quoted(text: str) -> str:
             esc = True
             continue
         if quote:
+            out.append(ch)
             if ch == quote:
                 quote = ""
-                out.append(" ")
-            else:
-                out.append(" " if ch in ";|&\n" else ch)
             continue
         if ch in "'\"":
             quote = ch
-            out.append(" ")
+            out.append(ch)
+            continue
+        if ch == "#" and (not out or out[-1] in " \t\n;&|("):
+            while True:                     # skip to end of line
+                nl = text.find("\n", len("".join(out)))
+                break
+            out.append("\n")
+            quote = "#"                     # reuse the flag as "in comment"
+            continue
+        out.append(ch)
+    joined = "".join(out)
+    return re.sub(r"(?m)(^|(?<=[\s;&|(]))#[^\n]*", "", joined)
+
+
+def tokenize(cmd: str) -> list[str]:
+    """Shell words and operators, with quoting, escapes, comments and line continuations
+    resolved by `shlex`. Falls back to whitespace splitting if the text does not parse
+    (an unbalanced quote, say), because the caller must still get *some* view of it."""
+    text = cmd.replace("\\\n", " ")
+    lex = shlex.shlex(text, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    try:
+        return list(lex)
+    except ValueError:
+        return [t for t in re.split(r"\s+", text) if t]
+
+
+def blank_quoted(text: str) -> str:
+    """Replace the *content* of quoted regions with nothing, keeping the shell structure.
+    A destructive command written inside quotes is an argument, not a command."""
+    out, quote, esc = [], "", False
+    for ch in text:
+        if esc:
+            esc = False
+            continue
+        if ch == "\\" and quote != "'":
+            esc = True
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+                out.append(quote or ch)
+            continue
+        if ch in "'\"":
+            quote = ch
+            out.append("''")
             continue
         out.append(ch)
     return "".join(out)
 
 
-# statement separators run in the current shell; `|` starts a subshell for each stage
-_STATEMENT_SPLIT_RE = re.compile(r"&&|\|\||;|\n|(?<![>&])&(?!&)")
+_OPERATORS = {";", "&&", "||", "|", "&", "\n"}
 
 
-def _walk_statements(text: str, start_dir: str) -> list[str]:
-    """Resolve write targets while following `cd` with a shell's own rules: a `cd` in a
-    pipeline stage is subshell-local, `cd -` returns to the previous directory, and a `cd`
-    whose argument cannot be resolved falls back to the directory the command started in."""
-    cwd: str | None = start_dir
-    prev: str | None = start_dir
+def statements(tokens: list[str]) -> list[str]:
+    """Token stream split into statements, each joined back into text. Used to test the
+    destructive-command patterns in command position only."""
+    out, cur = [], []
+    for t in tokens:
+        if t in _OPERATORS:
+            if cur:
+                out.append(" ".join(cur))
+            cur = []
+        else:
+            cur.append(t)
+    if cur:
+        out.append(" ".join(cur))
+    return out
+
+
+def _interp_targets(text: str) -> list[str]:
+    out = []
+    for m in _INTERP_WRITE_RE.finditer(text):
+        out.extend(g for g in (m.group("open"), m.group("path"), m.group("os"), m.group("sh"), m.group("node")) if g)
+    return out
+
+
+def _token_write_targets(tokens: list[str]) -> list[str]:
+    """Paths the tokenised command would create, modify or delete."""
     out: list[str] = []
-    for stmt in _STATEMENT_SPLIT_RE.split(text):
-        stmt = stmt.strip()
-        if not stmt:
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+        if _REDIRECT_TOKEN_RE.match(tok):
+            if i + 1 < len(tokens):
+                out.append(tokens[i + 1])
+            i += 2
             continue
-        stages = [x.strip() for x in stmt.split("|")]
-        piped = len(stages) > 1
-        for stage in stages:
-            if not stage:
-                continue
-            cd = _CD_RE.match(stage)
-            if cd:
-                if piped:
-                    continue                      # subshell: the parent shell does not move
-                d = _dequote(cd.group("dir"))
-                if d == "-":
-                    cwd, prev = prev, cwd
-                elif "$" in d or "`" in d or d.startswith("~"):
-                    prev, cwd = cwd, None         # unresolvable: fall back to the start dir
-                else:
-                    base = cwd if cwd is not None else start_dir
-                    prev, cwd = cwd, (d if os.path.isabs(d) else os.path.normpath(os.path.join(base or ".", d)))
-                continue
-            base = cwd if cwd is not None else start_dir
-            for t in _segment_targets(stage):
-                t = _dequote(t)
-                if not t or t in {"/dev/null", "/dev/stdout", "/dev/stderr", "&1", "&2"} or t.startswith("-"):
-                    continue
-                if os.path.isabs(t) or not base:
-                    out.append(t)
-                else:
-                    out.append(os.path.normpath(os.path.join(base, t)))
+        cmd_word = tok.rsplit("/", 1)[-1]
+        if cmd_word in _WRITE_CMDS:
+            j = i + 1
+            while j < len(tokens) and tokens[j] not in {";", "&&", "||", "|", "&", "\n"} and not _REDIRECT_TOKEN_RE.match(tokens[j]):
+                if not tokens[j].startswith("-"):
+                    out.append(tokens[j])
+                j += 1
+            i = j
+            continue
+        if cmd_word in {"sed", "perl"}:
+            j, in_place, args = i + 1, False, []
+            while j < len(tokens) and tokens[j] not in {";", "&&", "||", "|", "&"}:
+                if tokens[j].startswith("-") and "i" in tokens[j][1:]:
+                    in_place = True
+                elif not tokens[j].startswith("-"):
+                    args.append(tokens[j])
+                j += 1
+            if in_place:
+                out.extend(args[1:])                # first non-option word is the expression
+            i = j
+            continue
+        if cmd_word == "git":
+            j = i + 1
+            while j < len(tokens) and (tokens[j].startswith("-") or (j > i + 1 and tokens[j - 1] in {"-C", "-c", "--git-dir", "--work-tree"})):
+                j += 1
+            if j < len(tokens) and tokens[j] in _GIT_WRITE_SUBCMDS:
+                out.append(".git/")
+            i = j + 1
+            continue
+        if cmd_word in {"python", "python3", "node", "perl", "ruby"}:
+            for j in range(i + 1, len(tokens)):
+                if tokens[j] in {"-c", "-e"} and j + 1 < len(tokens):
+                    out.extend(_interp_targets(tokens[j + 1]))
+                if tokens[j] in {";", "&&", "||", "|", "&"}:
+                    break
+        i += 1
     return out
 
 
 def write_targets(cmd: str, cwd: str | None = None) -> list[str]:
-    """Paths a shell command would create, modify or delete: redirect targets, arguments of
-    write commands (rm/mv/cp/mkdir/touch/chmod/...), sed/perl -i files, interpreter one-liner
-    writes and git write operations. Reads are ignored.
+    """Paths a shell command would create, modify or delete.
 
-    `cd` is followed as a shell would follow it, so `cd .claude && touch x` resolves to
-    `.claude/x` while `cd /tmp && touch README.md` resolves to `/tmp/README.md`. Command
-    substitutions are walked separately because they execute in their own shell.
+    Relative paths are resolved against the workspace (or `cwd`), **not** against any `cd`
+    inside the command: modelling shell control flow with text matching does not work, and
+    guessing produced both bypasses and false positives. Use absolute paths for scratch work
+    outside the workspace. This is a best-effort signal, not a write boundary - the enforced
+    boundary is the tool-level guard on Write/Edit and the Claude Code permission settings.
     """
-    unq = strip_heredocs(cmd)
-    start_dir = cwd or ""
-    targets = _walk_statements(_neutralise_quoted(unq), start_dir)
-    subs = _substitutions(unq)
+    stripped, live_bodies = split_heredocs(cmd)
+    tokens = tokenize(stripped)
+    targets = _token_write_targets(tokens)
+    for body in live_bodies:                        # heredoc bodies keep their own quoting
+        targets += _interp_targets(body)
+        targets += _token_write_targets(tokenize(body))
+    subs = _substitutions(stripped)
     if subs:
-        targets += _walk_statements(_neutralise_quoted(subs), start_dir)
-    return targets
+        targets += _token_write_targets(tokenize(subs))
+        targets += _interp_targets(subs)
+    # a `cd` into a protected directory makes every relative write in the same command suspect
+    protected_cd = []
+    for i, t in enumerate(tokens):
+        if t not in ("cd", "pushd"):
+            continue
+        j = i + 1
+        while j < len(tokens) and tokens[j].startswith("-") and tokens[j] != "--":
+            j += 1
+        if j < len(tokens) and tokens[j] == "--":
+            j += 1
+        if j < len(tokens) and tokens[j] not in {";", "&&", "||", "|", "&"} and not tokens[j].startswith("-"):
+            protected_cd.append(tokens[j])
+    cleaned: list[str] = []
+    for t in targets:
+        if not t or t in {"/dev/null", "/dev/stdout", "/dev/stderr", "&1", "&2"} or t.startswith("-"):
+            continue
+        cleaned.append(t)
+        if not os.path.isabs(t):
+            for d in protected_cd:
+                if not os.path.isabs(d):
+                    cleaned.append(os.path.normpath(os.path.join(d, t)))
+    return cleaned
 
-
-WRITE_INDICATORS = [
-    r"(^|[^<>])>\s*\S", r">>", r"\btee\b", r"\bsed\s+-[a-zA-Z]*i", r"\bperl\s+-[a-zA-Z]*i", r"\brm\b", r"\bmv\b", r"\bcp\b",
-    r"\bmkdir\b", r"\btouch\b", r"\bchmod\b", r"\bchown\b", r"\bln\b", r"\btruncate\b", r"\bpatch\b",
-    r"\bgit\s+(add|commit|checkout|switch|restore|stash|merge|rebase|reset|apply|rm|mv|clean)\b",
-    r"\bpython3?\s+-c\b.*open\(.*['\"]w", r"\bcat\s*<<", r"\binstall\b", r"\bunzip\b", r"\btar\s+-?x",
-]
-
-
-# --------------------------------------------------------------------------- #
-# Path normalisation
-# --------------------------------------------------------------------------- #
 
 def normalize_path(p: str, cwd: str | None = None) -> str:
     """Return the path relative to the workspace root when possible, with a trailing
@@ -294,19 +366,36 @@ def check_command(command: str, agent: str | None = None, policy: dict | None = 
     """Global safety gate for shell commands (all agents, including the Lead)."""
     policy = policy or rndlib.load_policy()
     cmd = command.strip()
-    scan = strip_heredocs(cmd)  # heredoc *data* (file contents) is not a command
+    stripped, live_bodies = split_heredocs(cmd)
+    # Two views: the raw text (keeps quoting, so patterns written against quoted arguments
+    # still match) and the token stream (resolves continuations, comments and quoting).
+    subs = _substitutions(stripped)
+    inner = live_bodies + ([subs] if subs else [])      # interpreter bodies and substitutions
+    texts = [stripped] + inner
+    # In shell text, quoted argument content is blanked so a search string such as
+    # `grep "git reset --hard"` is not mistaken for the command itself. Inside an interpreter
+    # body a string literal can still be executed (`os.system("...")`), so those are scanned raw.
+    searchable = [blank_quoted(normalise_text(stripped))]
+    searchable += inner + [blank_quoted(normalise_text(t)) for t in inner]
+    # Token statements resolve quoting and line continuations, and are matched in command
+    # position only, so `rm -rf "/"` and a continued `git \<newline> reset --hard` are caught.
+    anchored = [st for t in texts for st in statements(tokenize(normalise_text(t)))]
     for pat in policy["safety"]["blockedCommandPatterns"]:
-        if re.search(pat, scan):
-            return False, f"command matches blocked pattern: /{pat}/"
+        for view in searchable:
+            if re.search(pat, view):
+                return False, f"command matches blocked pattern: /{pat}/"
+        for st in anchored:
+            if re.match(pat, st):
+                return False, f"command matches blocked pattern: /{pat}/"
 
     agent = (agent or "").lower()
     if agent in BUILDER_AGENTS:
-        # Only the paths the command would actually write are checked; reading
-        # /bin/sh or grepping .claude/scripts/ is fine.
         for token in write_targets(cmd, cwd):
             ok, why = check_path_write(token, agent, policy, cwd)
             if not ok:
-                return False, f"builder shell write to protected path '{token}': {why}"
+                return False, (f"builder shell write to protected path '{token}': {why}. "
+                               f"Relative paths are read as workspace paths; use an absolute path "
+                               f"for scratch files outside it.")
     return True, "ok"
 
 
@@ -342,35 +431,49 @@ def _strip_quoted(cmd: str) -> str:
 # separately rather than only `os.unlink`.
 _PY_WRITE_VERBS = (r"remove|unlink|rmdir|removedirs|rename|replace|mkdir|makedirs|chmod|chown"
                    r"|system|popen|exec[lv]p?e?|spawn\w*|kill|killpg|truncate|symlink|link|rmtree"
-                   r"|move|copy|copy2|copyfile|copytree|run|call|check_output|Popen")
+                   r"|move|copy|copy2|copyfile|copytree|run|call|check_call|check_output|Popen"
+                   r"|write_text|write_bytes|writelines|touch")
 _PY_DANGEROUS_MODULES = ("os", "shutil", "subprocess", "pty", "socket", "ctypes", "multiprocessing")
 _PY_ALWAYS_DENY_RE = re.compile(
-    r"""open\s*\([^)]*(?:,\s*|mode\s*=\s*)["'][^"']*[wax+]"""     # open(p, "w"/"a"/"r+")
-    r"""|\b(?:shutil|subprocess|pty|socket|ctypes|multiprocessing)\s*\."""
+    r"""open\s*\([^)]*(?:,\s*|mode\s*=\s*)["'][^"']*[wax+]"""     # open(p, "w" / "a" / "r+")
     r"""|\bPopen\b|\b__import__\b|\bexec\s*\(|\beval\s*\("""
     r"""|\.\s*(?:write_text|write_bytes|writelines|unlink|rmdir|makedirs|mkdir|touch|rmtree|chmod|chown)\s*\("""
-    # Path("a").replace("b") is a rename; "a".replace("b") is not
-    r"""|\b(?:Path|PurePath)\s*\([^)]*\)\s*(?:\.\s*\w+\s*\([^)]*\)\s*)*\.\s*(?:replace|rename)\s*\("""
 )
+_PY_PATH_RECEIVER_RE = re.compile(r"\b(\w+)\s*=\s*(?:Path|PurePath)\s*\(")
+_PY_PATH_CALL_RE = re.compile(r"\.\s*(?:replace|rename)\s*\(")
 
 
 def _inline_python_writes(code: str) -> bool:
-    """True when a `python3 -c` one-liner writes, deletes or spawns. Import aliases are
-    resolved (`import os as o` -> `o.remove(...)`) so reading, `os.getcwd()` and string
-    methods such as `"a".replace("b")` stay allowed."""
+    """True when a `python3 -c` one-liner writes, deletes or spawns. Import aliases and
+    variables holding a Path are resolved, so `import os as o; o.remove(p)` and
+    `p = Path(x); p.rename(y)` are caught while `os.getcwd()`, `open(p).read()` and
+    `"a".replace("b")` stay allowed."""
     if _PY_ALWAYS_DENY_RE.search(code):
         return True
     names = set(_PY_DANGEROUS_MODULES)
-    for m in re.finditer(r"\bimport\s+(" + "|".join(_PY_DANGEROUS_MODULES) + r")\s+as\s+(\w+)", code):
-        names.add(m.group(2))
-    if re.search(r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\s*\.\s*(?:" + _PY_WRITE_VERBS + r")\s*\(", code):
+    for m in re.finditer(r"\bimport\s+([\w., ]+)", code):
+        for part in m.group(1).split(","):
+            words = part.split()
+            if words and words[0] in _PY_DANGEROUS_MODULES:
+                names.add(words[-1])               # `import os as o` -> o ; `import os` -> os
+    if re.search(r"\b(?:" + "|".join(re.escape(n) for n in sorted(names)) + r")\s*\.\s*(?:" + _PY_WRITE_VERBS + r")\s*\(", code):
         return True
-    # `from os import remove` / `from shutil import rmtree as nuke` -> bare call
+    # `from os import remove` / `from shutil import rmtree as nuke`: only write verbs matter,
+    # so `from os import getcwd` stays allowed
     for m in re.finditer(r"\bfrom\s+(?:" + "|".join(_PY_DANGEROUS_MODULES) + r")\s+import\s+([^\n;]+)", code):
         for part in m.group(1).split(","):
-            name = part.strip().split()[-1] if part.strip() else ""
-            if name and re.search(r"\b" + re.escape(name) + r"\s*\(", code):
+            words = part.replace("(", "").replace(")", "").split()
+            if not words:
+                continue
+            imported, local = words[0], words[-1]
+            if re.fullmatch(_PY_WRITE_VERBS, imported) and re.search(r"\b" + re.escape(local) + r"\s*\(", code):
                 return True
+    # a variable holding a Path, used for a rename/replace
+    for m in _PY_PATH_RECEIVER_RE.finditer(code):
+        if re.search(r"\b" + re.escape(m.group(1)) + r"\s*" + _PY_PATH_CALL_RE.pattern, code):
+            return True
+    if re.search(r"\b(?:Path|PurePath)\s*\([^)]*\)\s*(?:\.\s*\w+\s*\([^)]*\)\s*)*" + _PY_PATH_CALL_RE.pattern, code):
+        return True
     return False
 
 
@@ -415,7 +518,7 @@ def check_reviewer_command(command: str, agent: str, policy: dict | None = None)
                 return False, (f"inline python for agent '{agent}' must not write files, delete paths "
                                f"or spawn processes (reading, ast.parse and json inspection are fine)")
     # every segment of a pipeline / && chain must be allowed (quoted text already neutralised)
-    segments = [s.strip() for s in _SEGMENT_SPLIT_RE.split(unq) if s.strip()]
+    segments = [s.strip() for s in re.split(r"&&|\|\||;|\n|\||(?<![>&])&(?!&)", unq) if s.strip()]
     for seg in segments:
         seg_n = re.sub(r"^\s*(timeout\s+(--[a-z-]+=\S+\s+)?\d+[smh]?\s+)", "", seg)
         seg_n = re.sub(r"^\s*(cd\s+\S+\s*)$", "pwd", seg_n)

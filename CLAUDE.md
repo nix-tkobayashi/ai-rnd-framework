@@ -66,5 +66,5 @@ Read-only agents return their report as the final message; the Lead stores it (`
 - Codex CLI: never pin `-m`; the wrapper adds `--skip-git-repo-check -s read-only --output-schema` and a `timeout`. On timeout do not retry the identical prompt.
 - Python 3.10+ only, no third-party dependencies (`jsonschema` is optional).
 - Fix rounds in the Codex loop run required tests only; the Validator re-measures experiments after convergence. Keep agent reports within the word caps in their definitions.
-- The Bash safety gate ignores heredoc *data* (`cat > file <<EOF`) but scans heredocs fed to interpreters (`bash <<EOF`, `python3 - <<EOF`).
+- The Bash safety gate tokenises with `shlex`, ignores heredoc *data* (`cat > file <<EOF`) and scans bodies fed to interpreters. It reads relative paths as workspace paths and does not model `cd`; use absolute paths for scratch files outside the workspace. It is best effort - the enforced write boundary is the tool-level guard plus `permissions.deny`.
 - Local notes go in `CLAUDE.local.md` (git-ignored).

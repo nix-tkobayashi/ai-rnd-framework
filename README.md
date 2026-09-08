@@ -43,7 +43,7 @@ cd my-rnd-workspace && rm -rf .git && git init -b main
 
 # 2. check the engine on your machine
 python3 .claude/scripts/rnd.py doctor        # tooling, hooks, schemas, policy
-python3 -m pytest .claude/tests -q           # 154 engine tests
+python3 -m pytest .claude/tests -q           # 183 engine tests
 
 # 3. start working - your cases are committed with the engine from here on
 python3 .claude/scripts/rnd.py new "<title>" --question "<your question>"
@@ -74,7 +74,24 @@ User question → R&D Lead → existing-case search → resume | create
 
 ### What the guardrails do and do not do
 
-The PreToolUse hooks (`safety-gate`, `builder-write-guard`, `reviewer-shell-guard`) block destructive commands and keep each agent inside its write boundary. They parse shell text, so they are **defence in depth, not a sandbox**: they stop the mistakes an agent actually makes, not a determined attempt to get around them. The one real sandbox in the loop is Codex, which runs with `-s read-only`. Run this framework on code you are willing to have an agent modify, and keep the Claude Code permission settings as the outer boundary.
+Three layers, with different strengths. Being precise about them matters more than the label
+"secure":
+
+| Layer | What it is | What it guarantees |
+|-------|-----------|--------------------|
+| Codex sandbox | `codex exec -s read-only` | A real sandbox. The reviewer cannot write, whatever it decides to do. |
+| Tool-level write guard | `builder-write-guard` hook on Write/Edit/MultiEdit/NotebookEdit, plus `permissions.deny` in `.claude/settings.json` | Reliable. The path arrives as a structured argument, so there is nothing to parse and nothing to evade. This is the write boundary. |
+| Bash command gate | `safety-gate` and `reviewer-shell-guard` hooks | Best effort. It tokenises with `shlex` and blocks destructive commands and obvious writes to protected paths, but a shell command that is determined to write somewhere can. |
+
+The practical rule for the Bash gate: **relative paths are read as workspace paths.** It does not
+model `cd`, because four review rounds showed that guessing which `cd` won produces both false
+denials and bypasses. Use an absolute path (`/tmp/...`) for scratch files outside the workspace,
+and prefer the Write tool over shell redirection for files inside it.
+
+So: run this framework on a repository you are willing to let an agent modify, and keep the Claude
+Code permission settings as the outer boundary. The value of the role separation is that the
+*reviewer* and the *validator* are genuinely independent of the builder, not that the builder is
+imprisoned.
 
 ## Key guarantees
 | Principle | Enforced by |
