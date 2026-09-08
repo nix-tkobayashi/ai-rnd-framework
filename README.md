@@ -12,7 +12,7 @@ Everything except the top-level documents lives in dot-directories, so the worki
 
 ```
 ai-rnd-workspace/
-├── README.md  SPEC.md  CLAUDE.md  CHANGELOG.md  VERSION   # the only visible files
+├── README.md  SPEC.md  CLAUDE.md  CHANGELOG.md  VERSION  LICENSE   # the only visible files
 ├── .claude/          R&D Engine
 │   ├── agents/  skills/  hooks/  rules/  settings.json  rnd-policy.json
 │   └── scripts/  schemas/  tests/  pytest.ini
@@ -123,3 +123,7 @@ not that the builder is imprisoned.
 | `.claude/scripts/rndlib.py` | shared helpers (paths, schema validation, state machine, git) |
 
 Version: `python3 .claude/scripts/rnd.py --version`. Engine tests: `python3 -m pytest .claude/tests -q` (or without a system pytest: `uv run --no-project --with pytest -- python -m pytest .claude/tests -q`).
+
+## License
+
+MIT - see [`LICENSE`](LICENSE).

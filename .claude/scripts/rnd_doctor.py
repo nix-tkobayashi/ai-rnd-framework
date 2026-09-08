@@ -20,7 +20,7 @@ import rndlib  # noqa: E402
 from rndlib import ROOT, read_json  # noqa: E402
 
 REQUIRED_FILES = [
-    "CLAUDE.md", "README.md", ".gitignore", "VERSION", "CHANGELOG.md",
+    "CLAUDE.md", "README.md", ".gitignore", "VERSION", "CHANGELOG.md", "LICENSE",
     ".claude/settings.json", ".claude/rnd-policy.json", ".claude/pytest.ini",
     ".claude/agents/researcher.md", ".claude/agents/critic.md", ".claude/agents/claim-verifier.md",
     ".claude/agents/experiment-designer.md", ".claude/agents/builder.md", ".claude/agents/isolated-builder.md",

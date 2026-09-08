@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[2]
-COPY_ITEMS = [".claude", ".codex", "CLAUDE.md", "README.md", ".gitignore", "VERSION", "CHANGELOG.md"]
+COPY_ITEMS = [".claude", ".codex", "CLAUDE.md", "README.md", ".gitignore", "VERSION", "CHANGELOG.md", "LICENSE"]
 
 # split so this file never contains a literal blocked command (the safety gate scans it)
 RM, GIT, TOUCH = "r" + "m", "gi" + "t", "tou" + "ch"

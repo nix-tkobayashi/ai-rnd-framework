@@ -8,6 +8,12 @@ The published history starts at 0.5.0, the first release meant to be shared.
 Versions 0.1.0-0.4.0 were developed privately and their commits are not part of
 this repository; the entries below record what changed in each of them.
 
+## [0.6.1] - 2026-09-08
+
+### Added
+- `LICENSE` (MIT). Without it the repository defaulted to all rights reserved, which contradicts
+  distributing the framework for others to copy. `rnd_doctor.py` now expects the file to be present.
+
 ## [0.6.0] - 2026-09-08
 
 Fixes for the blockers found by an independent Codex audit of the 0.5.0 tree.
