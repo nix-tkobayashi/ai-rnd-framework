@@ -446,11 +446,73 @@ def test_review_reopen_never_reuses_round_numbers(ws: Path) -> None:
     assert r.returncode == 3 and case_json(ws, cid)["review"]["status"] == "failed_to_converge"
     run(ws, "rnd.py", "review", "reopen", cid, "--note", "split the change")
     c = case_json(ws, cid)
-    assert c["review"]["rounds"] == 2 and c["review"]["maxRounds"] == 3, "budget grows, counter does not reset"
+    rv = c["review"]
+    # the counter never resets (round numbers name the directories); the budget grows enough
+    # for a fix round plus the consecutive CLEAN rounds the risk level requires
+    assert rv["rounds"] == 2 and rv["maxRounds"] == 2 + rv["requiredCleanRounds"] + 1, rv
     r = run(ws, "codex_review.py", cid, check=False, env=env)
     assert r.returncode == 0
     rounds = sorted(p.name for p in next((ws / ".rnd" / "cases").glob(f"{cid}*/reviews")).iterdir())
     assert rounds == ["round-01", "round-02", "round-03"], rounds
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    # a shell's own cd rules: the parent shell only moves for a non-piped cd
+    ("cd /tmp && " + TOUCH + " README.md", 0),                 # writes /tmp/README.md
+    ("cd .claude; cd /tmp; " + TOUCH + " scratch.txt", 0),     # ends up in /tmp
+    ("cd .rnd/cases/RND-1/artifacts && " + TOUCH + " poc.py", 0),
+    ("cd .claude && " + TOUCH + " rnd-policy.json", 2),
+    ("cd /tmp | cat; cd .claude; " + TOUCH + " x", 2),         # cd in a pipeline is subshell-local
+    ("cd /tmp; cd -; cd .claude; " + TOUCH + " x", 2),         # cd - returns to the previous dir
+    ("echo 'x; cd /tmp; y'; cd .claude; " + TOUCH + " x", 2),  # quoted text is not a command
+    ("cd /tmp | cat; " + TOUCH + " .claude/x", 2),
+    # interpreter writes across languages and modes
+    ("node -e \"require('fs').writeFileSync('.claude/x', 'y')\"", 2),
+    ("python3 -c \"open('.claude/rnd-policy.json', 'r+').write('{}')\"", 2),
+    ("python3 -c \"print(open('.claude/rnd-policy.json').read())\"", 0),
+    # backslash parity in a heredoc body
+    ("cat <<EOF\n\\\\$(" + GIT + " reset --hard)\nEOF", 2),   # two backslashes: the shell runs it
+    ("cat <<EOF\n\\$(" + GIT + " reset --hard)\nEOF", 0),       # one backslash: inert
+])
+def test_safety_gate_shell_semantics(ws: Path, cmd: str, expected: int) -> None:
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "agent_type": "builder", "cwd": str(ws)}
+    assert hook(ws, "safety-gate.py", payload).returncode == expected, cmd
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    ("python3 -c \"import os as o; o.remove('.claude/rnd-policy.json')\"", 2),
+    ("python3 -c \"import os as o; o.system('ls')\"", 2),
+    ("python3 -c \"from pathlib import Path; Path('a').replace('b')\"", 2),
+    ("python3 -c \"from shutil import rmtree as nuke; nuke('x')\"", 2),
+    ("python3 -c \"import os; print(os.getcwd())\"", 0),
+    ("python3 -c \"print('a'.replace('a','b'))\"", 0),
+    ("python3 -c \"import json; print(json.load(open('x.json')))\"", 0),
+])
+def test_validator_inline_python_aliases(ws: Path, cmd: str, expected: int) -> None:
+    payload = {"tool_name": "Bash", "tool_input": {"command": cmd}, "agent_type": "validator", "cwd": str(ws)}
+    assert hook(ws, "reviewer-shell-guard.py", payload).returncode == expected, cmd
+
+
+def test_reopen_leaves_room_for_the_required_clean_streak(ws: Path) -> None:
+    """A reopened high-risk review must be able to reach two consecutive CLEAN rounds."""
+    cid = setup_impl_case(ws)
+    run(ws, "rnd.py", "review", "init", cid, "--risk", "high", "--max-rounds", "2")
+    findings_round = {"verdict": "FINDINGS", "summary": "", "previousFindingsResolution": [], "findings": [finding("bug A")]}
+    clean = {"verdict": "CLEAN", "summary": "", "previousFindingsResolution": [
+        {"id": "F-01-001", "resolution": "confirmed_fixed", "comment": "ok"}], "findings": []}
+    env = fake_codex(ws, [findings_round, findings_round, clean, clean])
+    run(ws, "codex_review.py", cid, check=False, env=env)
+    run(ws, "rnd.py", "finding", "set", cid, "F-01-001", "fixed_pending_review")
+    r = run(ws, "codex_review.py", cid, check=False, env=env)
+    assert r.returncode == 3, "budget exhausted"
+    run(ws, "rnd.py", "review", "reopen", cid, "--note", "arbitrated: keep design A")
+    rv = case_json(ws, cid)["review"]
+    assert rv["maxRounds"] >= rv["rounds"] + rv["requiredCleanRounds"] + 1, rv
+    run(ws, "rnd.py", "finding", "set", cid, "F-01-001", "fixed_pending_review")
+    r = run(ws, "codex_review.py", cid, check=False, env=env)     # first CLEAN
+    assert r.returncode == 2, r.stdout
+    r = run(ws, "codex_review.py", cid, check=False, env=env)     # second CLEAN -> converged
+    assert r.returncode == 0 and case_json(ws, cid)["review"]["status"] == "converged"
 
 
 def test_decide_enforces_completion_criteria(ws: Path) -> None:

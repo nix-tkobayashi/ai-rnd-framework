@@ -53,7 +53,8 @@ def _substitutions(text: str) -> str:
     Backslash-escaped forms (\\$(...) in a heredoc body) are inert and are skipped."""
     out = []
     for m in _SUBST_RE.finditer(text):
-        if m.start() > 0 and text[m.start() - 1] == "\\":
+        backslashes = len(text[:m.start()]) - len(text[:m.start()].rstrip("\\"))
+        if backslashes % 2:                 # odd count escapes the $ or the backtick
             continue
         out.append(m.group("paren") or m.group("tick") or "")
     return " ; ".join(out)
@@ -78,14 +79,17 @@ _SEGMENT_SPLIT_RE = re.compile(r"\|\||&&|;|\n|\||&")
 _CD_RE = re.compile(r"^(?:cd|pushd)\s+(?P<dir>[^\s;&|]+)\s*$")
 # interpreter one-liners that write: python -c "...open(p,'w')...", node -e, perl -e
 _INTERP_WRITE_RE = re.compile(
-    # open(path, "w") / io.open(path, mode="a") - a bare open() is a read and is fine
-    r"""(?:\bio\.)?\bopen\s*\(\s*["'](?P<open>[^"']+)["']\s*,\s*(?:mode\s*=\s*)?["'][wax+]"""
-    # Path("p").write_text(...) / .unlink() / .mkdir() ...
+    # open(path, "w" / "a" / "x" / "r+") - a read-only open() is fine
+    r"""(?:\bio\.)?\bopen\s*\(\s*["'](?P<open>[^"']+)["']\s*,\s*(?:mode\s*=\s*)?["'][^"']*[wax+][^"']*["']"""
+    # Path("p").write_text(...) / .unlink() / .replace(...) ...
     r"""|\b(?:Path|PurePath)\s*\(\s*["'](?P<path>[^"']+)["']\s*\)\s*(?:\.\s*\w+\s*\([^)]*\)\s*)*"""
     r"""\.\s*(?:write_text|write_bytes|writelines|unlink|mkdir|touch|rename|replace|chmod|rmdir|symlink_to|hardlink_to)\s*\("""
-    # os.remove("p") / shutil.rmtree("p") / os.makedirs("p")
+    # os.remove("p") / shutil.rmtree("p")
     r"""|\bos\s*\.\s*(?:remove|unlink|rmdir|removedirs|rename|replace|mkdir|makedirs|chmod|chown|truncate)\s*\(\s*["'](?P<os>[^"']+)["']"""
-    r"""|\bshutil\s*\.\s*(?:rmtree|move|copy|copy2|copyfile|copytree)\s*\(\s*["'](?P<sh>[^"']+)["']""",
+    r"""|\bshutil\s*\.\s*(?:rmtree|move|copy|copy2|copyfile|copytree)\s*\(\s*["'](?P<sh>[^"']+)["']"""
+    # node: fs.writeFileSync("p", ...) and friends
+    r"""|\b(?:writeFileSync|appendFileSync|createWriteStream|unlinkSync|rmSync|rmdirSync|mkdirSync|renameSync|copyFileSync|truncateSync)"""
+    r"""\s*\(\s*["'](?P<node>[^"']+)["']""",
 )
 
 
@@ -103,47 +107,100 @@ def _segment_targets(seg: str) -> list[str]:
     for m in _SED_INPLACE_RE.finditer(seg):
         out.extend([t for t in m.group(4).split() if not t.startswith("-")][1:])
     for m in _INTERP_WRITE_RE.finditer(seg):
-        out.extend(g for g in (m.group("open"), m.group("path"), m.group("os"), m.group("sh")) if g)
+        out.extend(g for g in (m.group("open"), m.group("path"), m.group("os"), m.group("sh"), m.group("node")) if g)
     if _GIT_WRITE_RE.search(seg):
         out.append(".git/")
     return out
 
 
-def write_targets(cmd: str, cwd: str | None = None) -> list[str]:
-    """Paths a shell command would create/modify/delete: redirect targets, arguments of
-    write commands (rm/mv/cp/mkdir/touch/chmod/...), sed/perl -i files, interpreter
-    one-liner writes, and git write operations. Reads are ignored.
+def _neutralise_quoted(text: str) -> str:
+    """Keep quoted *content* (paths are often quoted) but drop its shell *structure*, so text
+    inside quotes can never introduce a statement separator or a `cd`."""
+    out, quote, esc = [], "", False
+    for ch in text:
+        if esc:
+            out.append(ch)
+            esc = False
+            continue
+        if ch == "\\" and quote != "'":
+            out.append(ch)
+            esc = True
+            continue
+        if quote:
+            if ch == quote:
+                quote = ""
+                out.append(" ")
+            else:
+                out.append(" " if ch in ";|&\n" else ch)
+            continue
+        if ch in "'\"":
+            quote = ch
+            out.append(" ")
+            continue
+        out.append(ch)
+    return "".join(out)
 
-    `cd` is followed so `cd .claude && touch x` resolves to `.claude/x`, but every directory
-    seen (including the one the command started in) stays a candidate: a `cd` in a pipeline or
-    a `cd -` cannot move a relative write out of a protected directory.
+
+# statement separators run in the current shell; `|` starts a subshell for each stage
+_STATEMENT_SPLIT_RE = re.compile(r"&&|\|\||;|\n|(?<![>&])&(?!&)")
+
+
+def _walk_statements(text: str, start_dir: str) -> list[str]:
+    """Resolve write targets while following `cd` with a shell's own rules: a `cd` in a
+    pipeline stage is subshell-local, `cd -` returns to the previous directory, and a `cd`
+    whose argument cannot be resolved falls back to the directory the command started in."""
+    cwd: str | None = start_dir
+    prev: str | None = start_dir
+    out: list[str] = []
+    for stmt in _STATEMENT_SPLIT_RE.split(text):
+        stmt = stmt.strip()
+        if not stmt:
+            continue
+        stages = [x.strip() for x in stmt.split("|")]
+        piped = len(stages) > 1
+        for stage in stages:
+            if not stage:
+                continue
+            cd = _CD_RE.match(stage)
+            if cd:
+                if piped:
+                    continue                      # subshell: the parent shell does not move
+                d = _dequote(cd.group("dir"))
+                if d == "-":
+                    cwd, prev = prev, cwd
+                elif "$" in d or "`" in d or d.startswith("~"):
+                    prev, cwd = cwd, None         # unresolvable: fall back to the start dir
+                else:
+                    base = cwd if cwd is not None else start_dir
+                    prev, cwd = cwd, (d if os.path.isabs(d) else os.path.normpath(os.path.join(base or ".", d)))
+                continue
+            base = cwd if cwd is not None else start_dir
+            for t in _segment_targets(stage):
+                t = _dequote(t)
+                if not t or t in {"/dev/null", "/dev/stdout", "/dev/stderr", "&1", "&2"} or t.startswith("-"):
+                    continue
+                if os.path.isabs(t) or not base:
+                    out.append(t)
+                else:
+                    out.append(os.path.normpath(os.path.join(base, t)))
+    return out
+
+
+def write_targets(cmd: str, cwd: str | None = None) -> list[str]:
+    """Paths a shell command would create, modify or delete: redirect targets, arguments of
+    write commands (rm/mv/cp/mkdir/touch/chmod/...), sed/perl -i files, interpreter one-liner
+    writes and git write operations. Reads are ignored.
+
+    `cd` is followed as a shell would follow it, so `cd .claude && touch x` resolves to
+    `.claude/x` while `cd /tmp && touch README.md` resolves to `/tmp/README.md`. Command
+    substitutions are walked separately because they execute in their own shell.
     """
     unq = strip_heredocs(cmd)
-    unq += " ; " + _substitutions(unq)          # command substitutions execute too
-    bases: list[str] = [cwd or ""]
-    targets: list[str] = []
-    for seg in _SEGMENT_SPLIT_RE.split(unq):
-        seg = seg.strip()
-        if not seg:
-            continue
-        cd = _CD_RE.match(seg)
-        if cd:
-            d = _dequote(cd.group("dir"))
-            if d in ("-", "~", "$HOME", "$OLDPWD"):
-                continue                        # cannot resolve: keep the bases we have
-            nxt = d if os.path.isabs(d) else os.path.normpath(os.path.join(bases[-1] or ".", d))
-            if nxt not in bases:
-                bases.append(nxt)
-            continue
-        for t in _segment_targets(seg):
-            t = _dequote(t)
-            if not t or t in {"/dev/null", "/dev/stdout", "/dev/stderr", "&1", "&2"} or t.startswith("-"):
-                continue
-            if os.path.isabs(t):
-                targets.append(t)
-                continue
-            for b in bases:
-                targets.append(os.path.normpath(os.path.join(b, t)) if b else t)
+    start_dir = cwd or ""
+    targets = _walk_statements(_neutralise_quoted(unq), start_dir)
+    subs = _substitutions(unq)
+    if subs:
+        targets += _walk_statements(_neutralise_quoted(subs), start_dir)
     return targets
 
 
@@ -283,14 +340,38 @@ def _strip_quoted(cmd: str) -> str:
 # Inline `python3 -c` for read/test-only agents: reading is fine, writing / executing is not.
 # Module aliasing (`import os as o`) is covered by matching the modules and the method names
 # separately rather than only `os.unlink`.
-_INLINE_PY_DENY_RE = re.compile(
-    r"""open\s*\([^)]*(?:,\s*|mode\s*=\s*)["'][wax+]"""            # open(p, "w")
-    r"""|\b(?:import|from)\s+(?:shutil|subprocess|pty|socket|ctypes|multiprocessing)\b"""
-    r"""|\bos\s*\.\s*(?:remove|unlink|rmdir|removedirs|rename|replace|mkdir|makedirs|chmod|chown"""
-    r"""|system|popen|exec[lv]p?e?|spawn\w*|kill|killpg|truncate|symlink|link)\b"""
-    r"""|\b(?:shutil|subprocess)\s*\.|\bPopen\b|\b__import__\b|\bexec\s*\(|\beval\s*\("""
-    r"""|\.\s*(?:write_text|write_bytes|writelines|unlink|rmdir|makedirs|mkdir|touch|rmtree|chmod|chown|rename)\s*\("""
+_PY_WRITE_VERBS = (r"remove|unlink|rmdir|removedirs|rename|replace|mkdir|makedirs|chmod|chown"
+                   r"|system|popen|exec[lv]p?e?|spawn\w*|kill|killpg|truncate|symlink|link|rmtree"
+                   r"|move|copy|copy2|copyfile|copytree|run|call|check_output|Popen")
+_PY_DANGEROUS_MODULES = ("os", "shutil", "subprocess", "pty", "socket", "ctypes", "multiprocessing")
+_PY_ALWAYS_DENY_RE = re.compile(
+    r"""open\s*\([^)]*(?:,\s*|mode\s*=\s*)["'][^"']*[wax+]"""     # open(p, "w"/"a"/"r+")
+    r"""|\b(?:shutil|subprocess|pty|socket|ctypes|multiprocessing)\s*\."""
+    r"""|\bPopen\b|\b__import__\b|\bexec\s*\(|\beval\s*\("""
+    r"""|\.\s*(?:write_text|write_bytes|writelines|unlink|rmdir|makedirs|mkdir|touch|rmtree|chmod|chown)\s*\("""
+    # Path("a").replace("b") is a rename; "a".replace("b") is not
+    r"""|\b(?:Path|PurePath)\s*\([^)]*\)\s*(?:\.\s*\w+\s*\([^)]*\)\s*)*\.\s*(?:replace|rename)\s*\("""
 )
+
+
+def _inline_python_writes(code: str) -> bool:
+    """True when a `python3 -c` one-liner writes, deletes or spawns. Import aliases are
+    resolved (`import os as o` -> `o.remove(...)`) so reading, `os.getcwd()` and string
+    methods such as `"a".replace("b")` stay allowed."""
+    if _PY_ALWAYS_DENY_RE.search(code):
+        return True
+    names = set(_PY_DANGEROUS_MODULES)
+    for m in re.finditer(r"\bimport\s+(" + "|".join(_PY_DANGEROUS_MODULES) + r")\s+as\s+(\w+)", code):
+        names.add(m.group(2))
+    if re.search(r"\b(?:" + "|".join(re.escape(n) for n in names) + r")\s*\.\s*(?:" + _PY_WRITE_VERBS + r")\s*\(", code):
+        return True
+    # `from os import remove` / `from shutil import rmtree as nuke` -> bare call
+    for m in re.finditer(r"\bfrom\s+(?:" + "|".join(_PY_DANGEROUS_MODULES) + r")\s+import\s+([^\n;]+)", code):
+        for part in m.group(1).split(","):
+            name = part.strip().split()[-1] if part.strip() else ""
+            if name and re.search(r"\b" + re.escape(name) + r"\s*\(", code):
+                return True
+    return False
 
 
 def _token_present(token: str, unquoted: str) -> bool:
@@ -330,7 +411,7 @@ def check_reviewer_command(command: str, agent: str, policy: dict | None = None)
         # inline python is allowed for checks (ast.parse, json inspection) but not for writes
         for m in re.finditer(r"python3?\s+-c\s+(['\"])(.*?)\1", cmd, re.S):
             code = m.group(2)
-            if _INLINE_PY_DENY_RE.search(code):
+            if _inline_python_writes(code):
                 return False, (f"inline python for agent '{agent}' must not write files, delete paths "
                                f"or spawn processes (reading, ast.parse and json inspection are fine)")
     # every segment of a pipeline / && chain must be allowed (quoted text already neutralised)

@@ -846,12 +846,15 @@ def cmd_review_reopen(a: argparse.Namespace) -> int:
     rv["status"] = "in_progress"
     # Round numbers name the directories under reviews/, so they only ever go forward.
     # More budget is granted by raising maxRounds, never by resetting the counter.
+    need = rv.get("requiredCleanRounds", 1)
     if a.max_rounds:
         if a.max_rounds <= rv["rounds"]:
             die(f"--max-rounds must exceed the {rv['rounds']} rounds already recorded")
         rv["maxRounds"] = a.max_rounds
-    elif rv["rounds"] >= rv["maxRounds"]:
-        rv["maxRounds"] = rv["rounds"] + 1
+    else:
+        # room for a fix round plus the consecutive CLEAN rounds the risk level requires,
+        # otherwise a reopened high-risk case fails to converge again immediately
+        rv["maxRounds"] = max(rv["maxRounds"], rv["rounds"] + need + 1)
     rv["consecutiveClean"] = 0
     if c["state"] in ("BLOCKED", "FAILED_TO_CONVERGE"):
         transition(c, "BUILDING", by="lead", note=a.note, force=True)

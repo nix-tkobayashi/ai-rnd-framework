@@ -65,6 +65,21 @@ Fixes for the blockers found by an independent Codex audit of the 0.5.0 tree.
 - The oscillation / failed-to-converge recovery in the `review-convergence` skill now points at
   `review reopen`; the previously documented `state ... BUILDING` never cleared the blocking status.
 
+### Fixed - third review round
+- `cd` is now followed with a shell's own rules instead of accumulating candidate directories:
+  a `cd` in a pipeline stage is subshell-local, `cd -` returns to the previous directory, quoted
+  text can no longer introduce one, and an unresolvable target falls back to the starting
+  directory. The previous approach both blocked ordinary work (`cd /tmp && touch README.md`) and
+  still allowed `cd /tmp; cd <repo>; cd .claude; touch x`.
+- Interpreter write detection covers Node (`writeFileSync` and friends) again and recognises
+  update modes such as `r+`.
+- The read-only agents' inline-python check resolves import aliases and `from ... import` names,
+  so `import os as o; o.remove(...)` and `Path("a").replace("b")` are denied while `os.getcwd()`
+  and `"a".replace("b")` stay allowed.
+- Escaped command substitutions are judged on backslash parity: one backslash is inert, two are not.
+- `review reopen` grants a fix round plus the consecutive CLEAN rounds the risk level requires, so
+  a reopened high-risk review can actually converge.
+
 ### Changed
 - README says plainly what the hooks are: defence in depth, not a sandbox. Codex's `-s read-only`
   is the one real sandbox in the loop.
